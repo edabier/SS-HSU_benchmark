@@ -111,73 +111,7 @@ class VCA():
         snr_est = 10 * torch.log10((P_x - p / c * P_y) / (P_y - P_x))
 
         return snr_est
-    
-    # def remove_duplicates(self, lib, tol=1e-3):
-    #     """
-    #     Removes duplicates from spectra library
-    #     """
-    #     unique_spectra = []
-        
-    #     for spec in lib.T:
-    #         if not any(torch.linalg.norm(spec - uniq) < tol for uniq in unique_spectra):
-    #             unique_spectra.append(spec)
-    #     return torch.stack(unique_spectra).T
-    
-    # def group_spectra_kmeans(self, spectra, n_clusters, seed=42):
-    #     """
-    #     Groups spectra using scikit-learn's Kmeans algorithm.
-    #     """
-    #     spectra = spectra.numpy()
-    #     kmeans = KMeans(n_clusters=n_clusters, random_state=seed)
-    #     labels = kmeans.fit_predict(spectra)
-    #     centers = kmeans.cluster_centers_
-        
-    #     return centers, labels
-    
-    # def group_spectra_by_cluster(self, lib, memberships):
-    #     """
-    #     Groups spectra by cluster by attributing the cluster by maximum belonging degree.
-        
-    #     Args:
-    #         lib: spectra library of shape (n_spectra, c)
-    #         memberships: belonging matrix of shape (n_clusters, n_spectra)
-        
-    #     Returns:
-    #         groups: groups[i] contains cluster's i spectras of shape (nb_spectra_in_cluster, c).
-    #     """
-    #     # Attribution to cluster using argmax on the cluster's dimension
-    #     n_clusters = memberships.max().item() + 1
-    #     groups = []
-    #     for i in range(n_clusters):
-    #         indices = np.where(memberships == i)[0]
-    #         group = torch.stack([lib[:, idx] for idx in indices], dim=1)
-    #         groups.append(group)
-    #     return groups
-    
-    # def augment_spectrum(self, spectrum, c_var=0.4):
-    #     """
-    #     Applies a randomly drawn piece-wise affine function to the tensor's bands
-        
-    #     Args:
-    #         spectrum (torch.tensor): the input spectrum to be transformed
-    #         c_var (float): the variability coefficient
-    #     """
-    #     c = len(spectrum)
-    #     # Randomly draw the piece-wise affine function points
-    #     y0 = torch.rand(1) * c_var + (1 - c_var/2)
-    #     y1 = torch.rand(1) * c_var + (1 - c_var/2)
-    #     y2 = torch.rand(1) * c_var + (1 - c_var/2)
-    #     x = torch.floor(c/2 + torch.floor(c * torch.randn(1) / 3)).clamp(0, c)
-        
-    #     # Create a tensor of band indices (t) for each pixel
-    #     t = torch.arange(c).float()
-        
-    #     return spectrum * torch.where(
-    #         t <= x,
-    #         y0 + (y1 - y0) * t / x,
-    #         y1 + (y2 - y1) * (t - x) / (c - x)
-    #     )
-
+  
 # class FCLS(SupervisedUnmixingModel):
 #     def __init__(self, *args, **kwargs):
 #         super().__init__()

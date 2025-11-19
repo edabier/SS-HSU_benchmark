@@ -1,10 +1,18 @@
 import torch
 import torch.nn as nn
 from torchmetrics.functional.image import spectral_angle_mapper
-import data_augmentation
+import data_augmentation as data_aug
 import utils.extractor as extractor
+import utils.utils as utils
 
-class DIP():
+class SelfSupervisedTrainer():
+    def __init__(self):
+        pass
+    
+    def train(self, y):
+        raise NotImplementedError(f"Training method is not implemented for {self}")
+
+class DIP(SelfSupervisedTrainer):
     """
     Defines a Deep Image Prior-type of training based on Ulyanov et al. 2020.
     We optimize the model to reconstruct an input image y from random gaussian noise:
@@ -13,15 +21,12 @@ class DIP():
 
     Args:
         model: the model to train
-        criterion: the function to optimize by training the model
-        optimizer: the optimizer to use for the training, by default, it uses AdamW (default: None)
-        epochs (int, optional): the number of training epochs to do (default: 200)
-        lr (float, optional): the learning rate of the training (default: 0.001)
-        batch_size (int optional): the batch size to train the model (default: 1)
+        criterion: the function to optimize by training the model, by default the MSE loss (default: None)
+        optimizer: the optimizer to use for the training, by default, we use AdamW (default: None)
     """
-    def __init__(self, model, criterion, optimizer=None, epochs=200, lr=0.001, batch_size=1):
+    def __init__(self, model, criterion=None, optimizer=None, epochs=200, lr=0.001, batch_size=1):
+        super().__init__()
         self.model = model
-        self.criterion = criterion
         self.epochs = epochs
         self.lr = lr
         self.batch_size = batch_size 
@@ -30,6 +35,11 @@ class DIP():
             self.optimizer = optimizer
         else:
             self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=self.lr)
+        
+        if criterion is not None:
+            self.criterion = criterion
+        else:
+            self.criterion = nn.MSELoss()
     
     def train(self, y):
         train_losses = []
@@ -48,7 +58,7 @@ class DIP():
         return a_hat, e_hat, train_losses
     
 
-class TwoStagesNet():
+class TwoStagesNet(SelfSupervisedTrainer):
     """
     Defines a Two stages Net-type of training based on Vijayashekhar et al.2022
     We optimize the model to reconstruct an input image y and force it to be a good denoiser at the same time
@@ -60,10 +70,12 @@ class TwoStagesNet():
 
     Args:
         model: the model to train
+        B (int): the number of spectral bands of the input image
         criterion: the function to optimize by training the model, by default, we use the loss defined in the article (default: None)
-        optimizer: the optimizer to use for the training, by default, it uses AdamW (default: None)
+        optimizer: the optimizer to use for the training, by default, we use AdamW (default: None)
     """
-    def __init__(self, model, L, criterion=None, optimizer=None, epochs=200, lr=0.001, batch_size=1):
+    def __init__(self, model, B, criterion=None, optimizer=None, epochs=200, lr=0.001, batch_size=1):
+        super().__init__()
         self.model = model
         self.epochs = epochs
         self.lr = lr
@@ -78,10 +90,10 @@ class TwoStagesNet():
             self.criterion = criterion
             
         self.denoiser = nn.Sequential(
-            nn.Linear(L, 120), nn.ReLU(), nn.Dropout(p=0.3), 
+            nn.Linear(B, 120), nn.ReLU(), nn.Dropout(p=0.3), 
             nn.Linear(120, 90), nn.ReLU(), nn.Dropout(p=0.3), 
             nn.Linear(90, 45), nn.ReLU(), nn.Dropout(p=0.3), 
-            nn.Linear(45, L))
+            nn.Linear(45, B))
     
     def criterion(y_gt, y_hat, r, n):
         """
@@ -91,10 +103,11 @@ class TwoStagesNet():
         - SAD(r+n, y_gt)
         """
         mse = nn.MSELoss()
+        sad = utils.SADLoss()
         
         loss_forward = mse(y_gt, y_hat)
         loss_denoiser = mse(y_gt, (r+n))
-        loss_sad = spectral_angle_mapper(y_gt, (r+n))
+        loss_sad = sad(y_gt, (r+n))
         
         return loss_forward + loss_denoiser + loss_sad
     
@@ -117,12 +130,19 @@ class TwoStagesNet():
         return a_hat, e_hat, train_losses
     
 
-class GeneratedDataset():
+class GeneratedDataset(SelfSupervisedTrainer):
     """
     Uses the input HSI to generate an extended dataset based on Hadjeres et al. 2024
+    
+    Args:
+        model: the model to be trained
+        dataset_size (int, optional): the number of tuple (Yi, Ei, Ai) to generate (default: 10000)
+        criterion: the function to optimize by training the model, by default, we use the loss defined in the article (default: None)
+        optimizer: the optimizer to use for the training, by default, we use AdamW (default: None)
     """
     
-    def __init__(self, model, dataset_size, criterion=None, optimizer=None, epochs=200, lr=0.001, batch_size=1):
+    def __init__(self, model, dataset_size=10000, criterion=None, optimizer=None, epochs=200, lr=0.001, batch_size=1):
+        super().__init__()
         self.model = model
         self.dataset_size = dataset_size
         self.epochs = epochs
@@ -137,7 +157,7 @@ class GeneratedDataset():
         if criterion is not None:
             self.criterion = criterion
     
-    def create_dataset(self, y, n_vca, n_em, n_aug, c_var=0.4):
+    def create_dataset(self, y, c=4, n_vca=10, n_aug=10, c_var=0.4):
         """
         - We first run n times the VCA algorithm to extract different EM
         - We group them and remove duplicate with a K-means algorithm to construct a library
@@ -156,39 +176,43 @@ class GeneratedDataset():
         
         Args:
             y: the input HSI to unmix and with which to create a dataset
-            n_vca (int): the number of times to run the VCA
-            n_aug (int): the number of variations of each spectra of the library to create
+            c (int, optional): the number of endmembers to extract (default: 4)
+            n_vca (int, optional): the number of times to run the VCA (default: 10)
+            n_aug (int, optional): the number of variations of each spectra of the library to create (default: 10)
             c_var (float, optional): the variability coefficient (default: 0.4)
         """
-        h, w, c = y.shape
+        
+        B, h, w = y.shape
         
         self.dataset = {"E": [], "A": [], "Y": []}
         
         vca = extractor.VCA()
         endmember_lib = torch.tensor([])
 
-        # We run n_vca times the VCA extraction to get n_vca*n_em endmembers
+        # We run n_vca times the VCA extraction to get n_vca*c endmembers
         for _ in range(n_vca):
-            e = vca.extract_endmembers(y, c=n_em)
+            e = vca.extract_endmembers(y, c=c) # shape (B, c)
             endmember_lib = torch.cat((endmember_lib, e), dim=1)
 
         # We remove duplicate ems and normalize them
-        unique_spectra = vca.remove_duplicates(endmember_lib, tol=1e-4)
+        unique_spectra = data_aug.remove_duplicates(endmember_lib, tol=1e-4)
         norms = torch.linalg.norm(unique_spectra, dim=1, keepdim=True)
-        unique_spectra_norm = unique_spectra / norms
+        unique_spectra_norm = unique_spectra / norms # shape (B, c*nb_spectra_in_cluster)
 
-        # We use Kmeans to cluster the ems to create exactly n_em categories
-        centers, memberships = vca.group_spectra_kmeans(unique_spectra_norm.T, n_clusters=n_em)
-        grouped_lib = vca.group_spectra_by_cluster(unique_spectra_norm, memberships) # shape (n_em, nb_spectra_in_cluster, b)
+        # We use Kmeans to cluster the ems to create exactly c categories
+        centers, memberships = data_aug.group_spectra_kmeans(unique_spectra_norm.T, n_clusters=c)
+        grouped_lib = data_aug.group_spectra_by_cluster(unique_spectra_norm, memberships) # shape (c, N, nb_spectra_in_cluster)
 
         # We augment the number of ems in each cluster by running n_aug times the augmentation function
+        # Augmented_lib has shape (c, B, n_aug*nb_spectra_in_cluster)
         augmented_lib = [
-            torch.cat([torch.stack([vca.augment_spectrum(group[:, i]) for _ in range(n_aug)], dim=1)
+            torch.cat([torch.stack([data_aug.augment_spectrum(group[:, i], c_var) for _ in range(n_aug)], dim=1)
                     for i in range(group.shape[1])], dim=1)
         for group in grouped_lib]
         
         # We average the ems of each cluster to find an average E matrix
-        e_avg = torch.stack([torch.mean(augmented_lib[i], dim=1, keepdim=True) for i in range(n_em)], dim=1).squeeze(2)
+        # e_avg has shape (B, c)
+        e_avg = torch.stack([torch.mean(augmented_lib[i], dim=1, keepdim=True) for i in range(c)], dim=1).squeeze(2)
         
         for i in range(self.dataset_size):
             
@@ -204,17 +228,22 @@ class GeneratedDataset():
         """
         
         mse = nn.MSELoss()
+        sad = utils.SADLoss()
         
-        loss_e = spectral_angle_mapper(e_gt, e_hat)
+        loss_e = sad(e_gt, e_hat)
         loss_a = mse(a_gt, a_hat)**0.5
         
         return loss_e + loss_a
     
     def train(self, y):
+        
+        # Make sure the synthetic training dataset has been created first
+        assert hasattr(self, "dataset"), "The training dataset must be generated first by running self.create_datatset()"
+        
         train_losses = []
         for _ in range(self.epochs):
             
-            for i in range(len(self.dataset.E)):
+            for i in range(self.dataset_size):
                 
                 e_gt = self.dataset.E[i]
                 a_gt = self.dataset.A[i]
@@ -231,8 +260,3 @@ class GeneratedDataset():
                 self.optimizer.step()
             
         return a_hat, e_hat, train_losses
-    
-
-"""
-/!\ TO DO: make the loss def of Two Stages and Generated Dataset act as self.criterion
-"""

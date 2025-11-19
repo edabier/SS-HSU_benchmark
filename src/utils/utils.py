@@ -45,11 +45,13 @@ def correctPerm_torch(W0_tc,W_tc):
 
 
 class SADLoss(nn.Module):
-    # For EndMember matrices. To use it on Abundances, transpose the two inputs. (Doesn't correct permutations)
+    """
+    SAD loss function for EndMember matrices. To use it on Abundances, transpose the two inputs. (Doesn't correct permutations)
+    """
     def __init__(self):
         super(SADLoss, self).__init__()
 
-    def forward(self,targets,predictions):
+    def forward(self, targets, predictions):
         targets_norm = normalize(targets,p=2.0,dim=1)
         predictions_norm = normalize(predictions,p=2.0,dim=1)
         matConfusion = torch.bmm(torch.transpose(targets_norm, 1, 2),predictions_norm)
