@@ -1,6 +1,5 @@
 import torch
 import torch.nn as nn
-from torchmetrics.functional.image import spectral_angle_mapper
 import data_augmentation as data_aug
 import utils.extractor as extractor
 import utils.utils as utils
@@ -57,7 +56,6 @@ class DIP(SelfSupervisedTrainer):
             
         return e_hat, a_hat, train_losses
     
-
 class TwoStagesNet(SelfSupervisedTrainer):
     """
     Defines a Two stages Net-type of training based on Vijayashekhar et al.2022
@@ -129,7 +127,6 @@ class TwoStagesNet(SelfSupervisedTrainer):
             
         return e_hat, a_hat, train_losses
     
-
 class GeneratedDataset(SelfSupervisedTrainer):
     """
     Uses the input HSI to generate an extended dataset based on Hadjeres et al. 2024
@@ -260,7 +257,6 @@ class GeneratedDataset(SelfSupervisedTrainer):
                 self.optimizer.step()
             
         return e_hat, a_hat, train_losses
-
 
 class ContrastiveLearning(SelfSupervisedTrainer):
     """

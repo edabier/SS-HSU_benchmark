@@ -15,10 +15,11 @@ We can choose between 5 models to train:
     - NALMU
     - RALMU
 
-We can choose between 3 training strategies:
+We can choose between 4 training strategies:
     - DIP
     - Two stages net
     - Synthetic generated dataset semi-supervised
+    - Contrastive learning
 """
 
 def main(c, B, model, training_strat, dataset, lr, epochs, batch_size):
@@ -46,9 +47,12 @@ def main(c, B, model, training_strat, dataset, lr, epochs, batch_size):
         trainer = training.DIP(model, epochs=epochs, lr=lr, batch_size=batch_size)
     elif training_strat == "TwoStagesNet":
         trainer = training.TwoStagesNet(model, B, epochs=epochs, lr=lr, batch_size=batch_size)
-    else:
+    elif train_strat == "GeneratedDataset":
         trainer = training.GeneratedDataset(model, epochs=epochs, lr=lr, batch_size=batch_size)
         trainer.create_dataset(dataset, c=c)
+    else:
+        projection_head = None # Place here the NN model chosen for the projection before the contrastive loss
+        trainer = training.ContrastiveLearning(model, projection_head, epochs=epochs, lr=lr, batch_size=batch_size)
     
     trainer.train(dataset)
     

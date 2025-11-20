@@ -70,7 +70,7 @@ class CNNAE_linear(nn.Module, HSUModel):
         code = self.encoder(x)
         abund = F.softmax(code * self.scale, dim=1)
         x_hat = self.decoder(abund)
-        e_est = self.decoder.weight
+        e_est = self.decoder.weight.data
         return e_est, abund, x_hat
 
     # @staticmethod
@@ -196,7 +196,7 @@ class CNNAEU(nn.Module, HSUModel):
         code = self.encoder(x)
         abund = F.softmax(code * self.scale, dim=1)
         x_hat = self.decoder(abund)
-        e_est = ?
+        e_est = self.decoder.weight.data.mean((2, 3))
         return e_est, abund, x_hat
 
     # @staticmethod
@@ -328,7 +328,7 @@ class Transformer_AE(nn.Module, HSUModel):
         abu_est = self.upscale(cls_emb).vieE(1, self.c, self.size, self.size)
         abu_est = self.smooth(abu_est)
         re_result = self.decoder(abu_est)
-        e_est = ?
+        e_est = self.decoder[0].weight.data
         return e_est, abu_est, re_result
 
 
@@ -423,8 +423,8 @@ class NALMU(nn.Module, HSUModel):
             A_pred_tab.append(A_pred)
             E_pred_tab.append(E_pred)
             
-        E_est = torch.stack(E_pred_tab, dim=)
-        A_est = torch.stack(A_pred_tab, dim=)
+        E_est = E_pred
+        A_est = A_pred
         X_reconstruct = E_est @ A_est
 
         return E_est, A_est, X_reconstruct
@@ -529,8 +529,8 @@ class RALMU(nn.Module, HSUModel):
             A_pred_tab.append(A_pred)
             E_pred_tab.append(E_pred)
             
-        E_est = torch.stack(E_pred_tab, dim=)
-        A_est = torch.stack(A_pred_tab, dim=)
+        E_est = E_pred
+        A_est = A_pred
         X_reconstruct = E_est @ A_est
 
         return E_est, A_est, X_reconstruct
