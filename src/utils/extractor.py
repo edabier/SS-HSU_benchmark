@@ -1,6 +1,7 @@
 import torch
 import torch.linalg as LA
 from sklearn.cluster import KMeans
+from cvxopt import matrix, solvers
 import numpy as np
 import time
 
@@ -112,98 +113,85 @@ class VCA():
 
         return snr_est
   
-# class FCLS(SupervisedUnmixingModel):
-#     def __init__(self, *args, **kwargs):
-#         super().__init__()
+class FCLS():
+    def __init__(self):
+        super().__init__()
 
-#     @staticmethod
-#     def _numpy_None_vstack(A1, A2):
-#         if A1 is None:
-#             return A2
-#         else:
-#             return np.vstack([A1, A2])
+    @staticmethod
+    def _numpy_None_vstack(A1, A2):
+        if A1 is None:
+            return A2
+        else:
+            return np.vstack([A1, A2])
 
-#     @staticmethod
-#     def _numpy_None_concatenate(A1, A2):
-#         if A1 is None:
-#             return A2
-#         else:
-#             return np.concatenate([A1, A2])
+    @staticmethod
+    def _numpy_None_concatenate(A1, A2):
+        if A1 is None:
+            return A2
+        else:
+            return np.concatenate([A1, A2])
 
-#     @staticmethod
-#     def _numpy_to_cvxopt_matrix(A):
-#         A = np.array(A, dtype=np.float64)
-#         if A.ndim == 1:
-#             return matrix(A, (A.shape[0], 1), "d")
-#         else:
-#             return matrix(A, A.shape, "d")
+    @staticmethod
+    def _numpy_to_cvxopt_matrix(A):
+        A = np.array(A, dtype=np.float64)
+        if A.ndim == 1:
+            return matrix(A, (A.shape[0], 1), "d")
+        else:
+            return matrix(A, A.shape, "d")
 
-#     def compute_abundances(self, Y, E, *args, **kwargs):
-#         """
-#         Performs fully constrained least squares of each pixel in M
-#         using the endmember signatures of U. Fully constrained least squares
-#         is least squares with the abundance sum-to-one constraint (ASC) and the
-#         abundance nonnegative constraint (ANC).
-#         Parameters:
-#             Y: `numpy array`
-#                 2D data matrix (L x N).
-#             E: `numpy array`
-#                 2D matrix of endmembers (L x p).
-#         Returns:
-#             X: `numpy array`
-#                 2D abundance maps (p x N).
-#         References:
-#             Daniel Heinz, Chein-I Chang, and Mark L.G. Fully Constrained
-#             Least-Squares Based Linear Unmixing. Althouse. IEEE. 1999.
-#         Notes:
-#             Three sources have been useful to build the algorithm:
-#                 * The function hyperFclsMatlab, part of the Matlab Hyperspectral
-#                 Toolbox of Isaac Gerg.
-#                 * The Matlab (tm) help on lsqlin.
-#                 * And the Python implementation of lsqlin by Valera Vishnevskiy, click:
-#                 http://maggotroot.blogspot.ca/2013/11/constrained-linear-least-squares-in.html
-#                 , it's great code.
-#         """
-#         tic = time.time()
-#         assert len(Y.shape) == 2
-#         assert len(E.shape) == 2
+    def compute_abundances(self, Y, E):
+        """
+        Performs fully constrained least squares of each pixel in M
+        using the endmember signatures of U. Fully constrained least squares
+        is least squares with the abundance sum-to-one constraint (ASC) and the
+        abundance nonnegative constraint (ANC).
+        
+        Args:
+            Y: `numpy array`
+                2D data matrix (B x N).
+            E: `numpy array`
+                2D matrix of endmembers (B x c).
+        Returns:
+            A: `numpy array`
+                2D abundance maps (c x N).
+        """
+        tic = time.time()
+        assert len(Y.shape) == 2
+        assert len(E.shape) == 2
 
-#         L1, N = Y.shape
-#         L2, p = E.shape
+        B1, N = Y.shape
+        B2, c = E.shape
 
-#         assert L1 == L2
+        assert B1 == B2
 
-#         # Reshape to match implementation
-#         M = np.copy(Y.T)
-#         U = np.copy(E.T)
+        # Reshape to match implementation
+        M = np.copy(Y.T)
+        U = np.copy(E.T)
+        U = U.astype(np.double)
 
-#         solvers.options["show_progress"] = False
+        C = self._numpy_to_cvxopt_matrix(U.T)
+        Q = C.T * C
 
-#         U = U.astype(np.double)
+        lb_a = -np.eye(c)
+        lb = np.repeat(0, c)
+        a = self._numpy_None_vstack(None, lb_a)
+        b = self._numpy_None_concatenate(None, -lb)
+        a = self._numpy_to_cvxopt_matrix(a)
+        b = self._numpy_to_cvxopt_matrix(b)
 
-#         C = self._numpy_to_cvxopt_matrix(U.T)
-#         Q = C.T * C
+        aeq = self._numpy_to_cvxopt_matrix(np.ones((1, c)))
+        beq = self._numpy_to_cvxopt_matrix(np.ones(1))
 
-#         lb_A = -np.eye(p)
-#         lb = np.repeat(0, p)
-#         A = self._numpy_None_vstack(None, lb_A)
-#         b = self._numpy_None_concatenate(None, -lb)
-#         A = self._numpy_to_cvxopt_matrix(A)
-#         b = self._numpy_to_cvxopt_matrix(b)
+        M = np.array(M, dtype=np.float64)
+        M = M.astype(np.double)
+        A = np.zeros((N, c), dtype=np.float32)
+        for n1 in range(N):
+            d = matrix(M[n1], (B1, 1), "d")
+            q = -d.T * C
+            sol = solvers.qp(Q, q.T, a, b, aeq, beq, None, None)["x"]
+            A[n1] = np.array(sol).squeeze()
 
-#         Aeq = self._numpy_to_cvxopt_matrix(np.ones((1, p)))
-#         beq = self._numpy_to_cvxopt_matrix(np.ones(1))
+        # Record time
+        self.time = time.time() - tic
 
-#         M = np.array(M, dtype=np.float64)
-#         M = M.astype(np.double)
-#         X = np.zeros((N, p), dtype=np.float32)
-#         for n1 in range(N):
-#             d = matrix(M[n1], (L1, 1), "d")
-#             q = -d.T * C
-#             sol = solvers.qp(Q, q.T, A, b, Aeq, beq, None, None)["x"]
-#             X[n1] = np.array(sol).squeeze()
-
-#         # Record time
-#         self.time = time.time() - tic
-
-#         return X.T
+        return A.T

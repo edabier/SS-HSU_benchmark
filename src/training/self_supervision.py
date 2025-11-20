@@ -47,7 +47,7 @@ class DIP(SelfSupervisedTrainer):
             self.optimizer.zero_grad()
             
             z = torch.randn_like(y)
-            a_hat, e_hat, y_hat = self.model.unmix(z)
+            e_hat, a_hat, y_hat = self.model(z)
             
             loss = self.criterion(y, y_hat)
             train_losses.append(loss)
@@ -55,7 +55,7 @@ class DIP(SelfSupervisedTrainer):
             loss.backward()
             self.optimizer.step()
             
-        return a_hat, e_hat, train_losses
+        return e_hat, a_hat, train_losses
     
 
 class TwoStagesNet(SelfSupervisedTrainer):
@@ -116,7 +116,7 @@ class TwoStagesNet(SelfSupervisedTrainer):
         for _ in range(self.epochs):
             self.optimizer.zero_grad()
             
-            a_hat, e_hat, r = self.model.unmix(y)
+            e_hat, a_hat, r = self.model(y)
             n = torch.randn_like(y)
             r += n
             y_hat = self.denoiser(r)
@@ -127,7 +127,7 @@ class TwoStagesNet(SelfSupervisedTrainer):
             loss.backward()
             self.optimizer.step()
             
-        return a_hat, e_hat, train_losses
+        return e_hat, a_hat, train_losses
     
 
 class GeneratedDataset(SelfSupervisedTrainer):
@@ -251,7 +251,7 @@ class GeneratedDataset(SelfSupervisedTrainer):
                 
                 self.optimizer.zero_grad()
                 
-                a_hat, e_hat, y_hat = self.model.unmix(y_gt)
+                e_hat, a_hat, y_hat = self.model(y_gt)
                 
                 loss = self.criterion(e_gt, e_hat, a_gt, a_hat)
                 train_losses.append(loss)
@@ -259,4 +259,140 @@ class GeneratedDataset(SelfSupervisedTrainer):
                 loss.backward()
                 self.optimizer.step()
             
-        return a_hat, e_hat, train_losses
+        return e_hat, a_hat, train_losses
+
+
+class ContrastiveLearning(SelfSupervisedTrainer):
+    """
+    Defines a contrastive training method based on Zhao et al.2022
+    We optimize the model to move the representation of similar patches close together, and move apart different ones
+    We use the NT-Xent loss for this
+    
+    We split the input image Y in patches
+    We create positive augmentations of each patch
+    We select negative patches in the image that don't contain the same EMs as the current patch
+    We forward the patch in the model to get estimated A and E
+    We project the estimated As of the positive and negative samples using the projection head
+    We compute the NT-Xent loss between every pair, minimizing it for positive pairs, and maximizing it for negative ones
+
+    Args:
+        model: the model to train
+        projection_head: the small model used to project the abundances map on a space on which we compute the loss
+        optimizer: the optimizer to use for the training, by default, we use AdamW (default: None)
+    """
+    def __init__(self, model, projection_head, optimizer=None, epochs=200, lr=0.001, batch_size=1):
+        super().__init__()
+        self.model = model
+        self.projection_head = projection_head
+        self.epochs = epochs
+        self.lr = lr
+        self.batch_size = batch_size 
+        
+        if optimizer is not None:
+            self.optimizer = optimizer
+        else:
+            self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=self.lr)
+    
+    def cosine_sim(self, A, B):
+        """
+        Computes the cosine similarity between two matrices
+        """
+        num = A.T @ B
+        denom = torch.norm(A) * torch.norm(B)
+        return num/ denom
+    
+    def criterion(self, a, a_positive, a_negative, temp=0.5):
+        """
+        Defines the NT-Xent loss
+        
+        Args:
+            a: the augmented A matrix
+            a_positive (list): the list of positive pairs generated from a
+            a_negative (list): the list of negative pairs for a
+            temp (float): the temperature parameter (default: 0.5)
+        """
+        loss = 0
+        
+        for a_pos in a_positive:
+            num = torch.exp(self.cosine_sim(a, a_pos))/ temp
+            denom = torch.sum([torch.exp(self.cosine_sim(a, a_negative[i]))/ temp for i in range(len(a_negative))])
+            l = - torch.log(num/denom)
+            loss += l
+            
+        return loss
+    
+    def find_negative_patches(self, y, patch_size, patch_pos):
+        """
+        Finds patches in y where there are different materials than in y_patch
+        We do this by estimating the endmembers and their abundance in y (VCA + FCLS)
+        Then, we find patches in y with the most different composition from the patch at patch_pos
+        
+        Args:
+            y: input HSI image
+            patch_size: The size of patches to split the y HSI
+            patch_pos: the position of the "positive" patch to compare to negative patches
+        """
+        pass
+    
+    def create_positive_patches(self, y, crop, flip, blur, spectral, n_pairs):
+        """
+        Creates n_pairs positive pairs of the input HSI y
+        
+        Args:
+            y: input HSI to be augmented
+            crop (float): the probability with which to apply cropping
+            flip (float): the probability with which to apply flipping
+            blur (float): the probability with which to apply  blurring
+            spectral (float): the probability with which to apply spectral variation
+            n_pairs (int): the number of pairs to generate
+        """
+        positive_pairs = []
+        
+        for _ in range(n_pairs):
+            rand_crop = torch.rand(1)
+            if rand_crop < crop:
+                aug_y = data_aug.crop_and_resize(y, r=0.95)
+                
+            rand_flip = torch.rand(1)
+            if rand_flip < flip:
+                aug_y = data_aug.flip(y)
+            
+            rand_blur = torch.rand(1)
+            if rand_blur < blur:
+                aug_y = data_aug.blur(y, r=3, sigma=2)
+            
+            rand_spectral = torch.rand(1)
+            if rand_spectral < spectral:
+                aug_y = data_aug.spectral_variability(y, c_var=0.4)
+            
+            try:
+                positive_pairs.append(aug_y)
+            except:
+                print("No augmentation applied, returning y")
+                return y
+        
+        return positive_pairs
+    
+    def train(self, y):
+        train_losses = []
+        for _ in range(self.epochs):
+            self.optimizer.zero_grad()
+            
+            y_positives = self.create_positive_patches(y, crop=1, flip=0, blur=0, spectral=0.8, n_pairs=2)
+            y_negative = self.find_negative_patches(y)
+            
+            e_hat, a_hat, x_hat = self.model(y_positives[0])
+            e_hat_pos, a_positive, x_hat_pos = self.model(y_positives[1])
+            e_hat_neg, a_negative, x_hat_neg = self.model(y_negative)
+            
+            a_projected = self.projection_head(a_hat)
+            a_positive_projected = self.projection_head(a_positive)
+            a_negative_projected = self.projection_head(a_negative)
+            
+            loss = self.criterion(a_projected, a_positive_projected, a_negative_projected)
+            train_losses.append(loss)
+            
+            loss.backward()
+            self.optimizer.step()
+            
+        return e_hat, a_hat, train_losses
