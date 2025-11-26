@@ -22,7 +22,7 @@ We can choose between 4 training strategies:
     - Contrastive learning
 """
 
-def main(c, B, model, training_strat, dataset, lr, epochs, batch_size):
+def main(c, model, training_strat, dataset, lr, epochs, batch_size):
     
     if torch.cuda.is_available():
         dev = "cuda:0"
@@ -32,12 +32,15 @@ def main(c, B, model, training_strat, dataset, lr, epochs, batch_size):
 
     print(f"Start of the script, device = {dev}")
     
+    # TO DO: retrieve the number of bands from the dataset
+    B = dataset.Y.shape[0]
+    
     if model == "CNNAEU":
-        model = models.CNNAEU(epochs=epochs, lr=lr)
+        model = models.CNNAEU(B=B, c=c)
     elif model == "CNN_linear":
-        model = models.CNNAE_linear(epochs=epochs, lr=lr)
+        model = models.CNNAE_linear(B=B, c=c)
     elif model == "Transformer":
-        model = models.Transformer_AE(c, B)
+        model = models.Transformer_AE(B=B, c=c)
     elif model == "NALMU":
         model = models.NALMU(b=B, c=c)
     else:
@@ -60,7 +63,6 @@ if __name__ == '__main__':
     
     parser = argparse.ArgumentParser()
     parser.add_argument("--c", default=4, type=int)
-    parser.add_argument("--B", default=200, type=int)
     parser.add_argument("--model", default="CNNAEU", type=str)
     parser.add_argument("--train_strat", default="DIP", type=str)
     parser.add_argument("--dataset", type=str)
@@ -70,7 +72,6 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     c = args.c
-    B = args.B
     model = args.model
     train_strat = args.train_strat
     dataset = args.dataset
@@ -81,4 +82,4 @@ if __name__ == '__main__':
     
     print(f"Starting training {model} on {dataset} using strategy {train_strat} with arguments: lr={lr}, epochs={epochs}, batch_size={batch_size}")
     
-    main(c, B, model, train_strat, dataset, lr, epochs, batch_size)
+    main(c, model, train_strat, dataset, lr, epochs, batch_size)

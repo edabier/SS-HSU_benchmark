@@ -130,6 +130,7 @@ def remove_duplicates(lib, tol=1e-3):
 def group_spectra_kmeans(spectra, n_clusters, seed=42):
     """
     Groups spectra using scikit-learn's Kmeans algorithm.
+    Spectra input shape (B, c * nb_spectra_in_cluster)
     """
     spectra = spectra.numpy()
     kmeans = KMeans(n_clusters=n_clusters, random_state=seed)

@@ -3,7 +3,7 @@ import numpy as np
 import torch.nn as nn
 import torch
 import torch.nn.functional as F
-import transformer
+import src.models.transformer as transformer
 from sklearn.feature_extraction.image import extract_patches_2d
 import tqdm
 
@@ -26,12 +26,64 @@ class HSUModel():
 Autoencoders
 """
 
+class MLAP_AE(nn.Module, HSUModel):
+    """
+    Adaptation of the MLP Auto encoder from Hong et al. 2021
+    
+    Args: 
+        c (int): the number of endmembers to extract
+        in_size (int): the size of the input tensor
+    """
+    def __init__(self, c, in_size, seed=None):
+        super(MLAP_AE, self).__init__()
+        
+        if seed is not None:
+            torch.manual_seed(seed)
+        
+        self.encoder = nn.Sequential(
+            nn.Linear(in_size, 256),
+            nn.BatchNorm1d(256),
+            nn.Dropout(),
+            nn.Tanh(),
+            nn.Linear(256, 128),
+            nn.BatchNorm1d(128),
+            nn.Tanh(),
+            nn.Linear(128, 32),
+            nn.BatchNorm1d(32),
+            nn.ReLU(),
+            nn.Linear(32, c)
+        )
+        
+        self.decoder = nn.Sequential(
+            nn.Linear(c, 32),
+            nn.BatchNorm1d(32),
+            nn.Sigmoid(),
+            nn.Linear(32, 128),
+            nn.BatchNorm1d(128),
+            nn.Sigmoid(),
+            nn.Linear(128, 256),
+            nn.BatchNorm1d(256),
+            nn.Sigmoid(),
+            nn.Linear(256, in_size),
+            nn.BatchNorm1d(in_size),
+            nn.Sigmoid()            
+        )
+    
+    def forward(self, x):
+        encoded = self.encoder(x)
+        abund = F.softmax(encoded)
+        x_hat = self.decoder(abund)
+        e_est = self.decoder.weight.data
+        return e_est, abund, x_hat
+
 class CNNAE_linear(nn.Module, HSUModel):
     """
     Adaptation of the CNNAEU implementation from the HySUPP repo
     """
-    def __init__(self, scale=3.0, epochs=200, lr=0.001, batch_size=1, patch_size=40):
+    def __init__(self, B, c, scale=3.0):
         super().__init__()
+        self.B = B
+        self.c = c
 
         self.device = torch.device(
             "cuda:0" if torch.cuda.is_available() else "cpu",
@@ -41,12 +93,10 @@ class CNNAE_linear(nn.Module, HSUModel):
             "negative_slope": 0.02,
             "inplace": True,
         }
+        
+        self.init_architecture()
 
         self.scale = scale
-        # self.epochs = epochs
-        # self.lr = lr
-        # self.batch_size = batch_size
-        # self.patch_size = patch_size
 
     def init_architecture(self, seed=None):
         
@@ -73,91 +123,14 @@ class CNNAE_linear(nn.Module, HSUModel):
         e_est = self.decoder.weight.data
         return e_est, abund, x_hat
 
-    # @staticmethod
-    # def loss(target, output):
-    #     assert target.shape == output.shape
-
-    #     dot_product = (target * output).sum(dim=1)
-    #     target_norm = target.norm(dim=1)
-    #     output_norm = output.norm(dim=1)
-    #     sad_score = torch.clamp(dot_product / (target_norm * output_norm), -1, 1).acos()
-    #     return sad_score.mean()
-
-    # def unmix(self, Y, c, H, W, seed=0):
-    #     tic = time.time()
-
-    #     B, N = Y.shape
-    #     # Hyperparameters
-    #     self.B = B  # number of spectral bands
-    #     self.c = c  # number of endmembers
-    #     self.H = H  # number of lines
-    #     self.W = W  # number of samples per line
-
-    #     self.num_patches = int(250 * self.H * self.W * self.B / (307 * 307 * 162))
-
-    #     self.init_architecture(seed=seed)
-
-    #     num_channels, h, w = self.B, self.H, self.W
-
-    #     Y_numpy = Y.reshape((num_channels, h, w)).transpose((1, 2, 0))
-
-    #     input_patches = extract_patches_2d(
-    #         Y_numpy,
-    #         max_patches=self.num_patches,
-    #         patch_size=(self.patch_size, self.patch_size),
-    #     )
-    #     input_patches = torch.Tensor(input_patches.transpose((0, 3, 1, 2)))
-
-    #     # Send model to GPU
-    #     self = self.to(self.device)
-    #     optimizer = torch.optim.RMSprop(self.parameters(), lr=self.lr)
-
-    #     # Dataloader
-    #     dataloader = torch.utils.data.DataLoader(
-    #         input_patches,
-    #         batch_size=self.batch_size,
-    #         shuffle=True,
-    #     )
-
-    #     progress = tqdm(range(self.epochs))
-    #     for ee in progress:
-
-    #         running_loss = 0
-    #         for ii, batch in enumerate(dataloader):
-    #             batch = batch.to(self.device)
-    #             optimizer.zero_grad()
-
-    #             _, outputs = self(batch)
-
-    #             # Reshape data
-    #             loss = self.loss(batch, outputs)
-    #             running_loss += loss.item()
-
-    #             loss.backEard()
-    #             optimizer.step()
-
-    #         progress.set_postfix_str(f"loss={running_loss:.3e}")
-
-    #     # Get final abundances and endmembers
-    #     self.eval()
-
-    #     Y_eval = torch.Tensor(Y.reshape((1, num_channels, h, w))).to(self.device)
-
-    #     abund, _ = self(Y_eval)
-
-    #     Ahat = abund.detach().cpu().numpy().reshape(self.c, self.H * self.W)
-    #     Ehat = self.decoder.weight.data.mean((2, 3)).detach().cpu().numpy()
-
-    #     self.time = time.time() - tic
-
-    #     return Ehat, Ahat
-
 class CNNAEU(nn.Module, HSUModel):
     """
     CNNAEU implementation from the HySUPP repo
     """
-    def __init__(self, scale=3.0, epochs=200, lr=0.001, batch_size=1, patch_size=40):
+    def __init__(self, B, c, scale=3.0):
         super().__init__()
+        self.B = B
+        self.c = c
 
         self.device = torch.device(
             "cuda:0" if torch.cuda.is_available() else "cpu",
@@ -167,12 +140,10 @@ class CNNAEU(nn.Module, HSUModel):
             "negative_slope": 0.02,
             "inplace": True,
         }
+        
+        self.init_architecture()
 
         self.scale = scale
-        # self.epochs = epochs
-        # self.lr = lr
-        # self.batch_size = batch_size
-        # self.patch_size = patch_size
 
     def init_architecture(self, seed=None):
         
@@ -199,94 +170,15 @@ class CNNAEU(nn.Module, HSUModel):
         e_est = self.decoder.weight.data.mean((2, 3))
         return e_est, abund, x_hat
 
-    # @staticmethod
-    # def loss(target, output):
-    #     assert target.shape == output.shape
-
-    #     dot_product = (target * output).sum(dim=1)
-    #     target_norm = target.norm(dim=1)
-    #     output_norm = output.norm(dim=1)
-    #     sad_score = torch.clamp(dot_product / (target_norm * output_norm), -1, 1).acos()
-    #     return sad_score.mean()
-
-    # def unmix(self, Y, c, H, W, seed=None):
-    #     tic = time.time()
-
-    #     B, N = Y.shape
-    #     # Hyperparameters
-    #     self.B = B  # number of spectral bands
-    #     self.c = c  # number of endmembers
-    #     self.H = H  # number of lines
-    #     self.W = W  # number of samples per line
-
-    #     self.num_patches = int(250 * self.H * self.W * self.B / (307 * 307 * 162))
-
-    #     self.init_architecture(seed=seed)
-
-    #     num_channels, h, w = self.B, self.H, self.W
-
-    #     Y_numpy = Y.reshape((num_channels, h, w)).transpose((1, 2, 0))
-
-    #     input_patches = extract_patches_2d(
-    #         Y_numpy,
-    #         max_patches=self.num_patches,
-    #         patch_size=(self.patch_size, self.patch_size),
-    #     )
-    #     input_patches = torch.Tensor(input_patches.transpose((0, 3, 1, 2)))
-
-    #     # Send model to GPU
-    #     self = self.to(self.device)
-    #     optimizer = torch.optim.RMSprop(self.parameters(), lr=self.lr)
-
-    #     # Dataloader
-    #     dataloader = torch.utils.data.DataLoader(
-    #         input_patches,
-    #         batch_size=self.batch_size,
-    #         shuffle=True,
-    #     )
-
-    #     progress = tqdm(range(self.epochs))
-    #     for ee in progress:
-
-    #         running_loss = 0
-    #         for ii, batch in enumerate(dataloader):
-    #             batch = batch.to(self.device)
-    #             optimizer.zero_grad()
-
-    #             _, outputs = self(batch)
-
-    #             # Reshape data
-    #             loss = self.loss(batch, outputs)
-    #             running_loss += loss.item()
-
-    #             loss.backEard()
-    #             optimizer.step()
-
-    #         progress.set_postfix_str(f"loss={running_loss:.3e}")
-
-    #     # Get final abundances and endmembers
-    #     self.eval()
-
-    #     Y_eval = torch.Tensor(Y.reshape((1, num_channels, h, w))).to(self.device)
-
-    #     abund, _ = self(Y_eval)
-
-    #     Ahat = abund.detach().cpu().numpy().reshape(self.c, self.H * self.W)
-    #     Ehat = self.decoder.weight.data.mean((2, 3)).detach().cpu().numpy()
-
-    #     self.time = time.time() - tic
-
-    #     return Ehat, Ahat
-
 class Transformer_AE(nn.Module, HSUModel):
     """
     Args:
         c (int): the number of endmembers
         B (int): the number of spectral bands
     """
-    def __init__(self, c, B, size, patch, dim):
+    def __init__(self, B, c, size, patch, dim):
         super(Transformer_AE, self).__init__()
-        self.c, self.B, self.size, self.dim = c, B, size, dim
+        self.B, self.c, self.size, self.dim = B, c, size, dim
         self.encoder = nn.Sequential(
             nn.Conv2d(B, 128, kernel_size=(1, 1), stride=(1, 1), padding=(0, 0)),
             nn.BatchNorm2d(128, momentum=0.9),
@@ -339,26 +231,69 @@ Unrolling
 class MLP(nn.Module):
     """
     Simple MLP architecture for Ae
-    """
-    def __init__(self, m, n):
-        super().__init__()
-        
-        self.fc = nn.Linear(m,n)
     
-    def forward(self, x):
-        out = self.fc(x)
-        return out
+    Args:
+        input_size (list): the shape of Endmember matrix E (default: [65, 4])
+    """
+    def __init__(self, input_size=[65,4]):
+        super().__init__()
+        self.input_size = input_size
+        self.a1 = nn.Linear(input_size[0]*input_size[1],130,dtype=torch.float)
+        self.a2 = nn.Linear(130,75,dtype=torch.float)
+        self.a3 = nn.Linear(75,input_size[0]*input_size[1],dtype=torch.float)
+        self.relu = nn.ReLU()
+        
+    def forward(self,x):
+        y = x.reshape((x.size()[0],self.input_size[0]*self.input_size[1]))
+        
+        out = self.a1(y)
+        out = self.relu(out)
+        
+        out = self.a2(out)
+        out = self.relu(out)
+    
+        out = self.a3(out)
+      
+        output = out.reshape((x.size()[0],self.input_size[0],self.input_size[1]))
+        return output
     
 class CNN2D(nn.Module):
     """
     Simple 2D CNN architecture for Aa
-    """
-    def __init__(self, image_size, conv_size):
-        super().__init__()
-        self.conv1 = nn.Conv2d(in_channels=image_size, out_channels=image_size, kernel_size=conv_size)
     
-    def forward(self, x):
+    Args:
+        input_size (list): the shape of matrix Abundance A (default: [4, 346, 346])
+        conv_size (int): the size of the convolution kernels (default: 3)
+    """
+    def __init__(self, input_size=[4,346,346],conv_size=3):
+        super().__init__()
+        self.input_size = input_size
+        
+        # On garde un nombre de canaux egaux au nombre de sources
+        self.conv1 = nn.Conv2d(input_size[0], 32, conv_size, padding='same',dtype=torch.float)
+        self.conv2 = nn.Conv2d(32, 32, conv_size, padding='same',dtype=torch.float)
+        self.conv3 = nn.Conv2d(32, 16, conv_size, padding='same',dtype=torch.float)
+        self.conv4 = nn.Conv2d(16, 8, conv_size, padding='same',dtype=torch.float)
+        self.conv5 = nn.Conv2d(8, input_size[0], conv_size, padding='same',dtype=torch.float)
+        self.relu = nn.ReLU()
+        
+    def forward(self,x):
+
         out = self.conv1(x)
+        out = self.relu(out)
+        
+        out = self.conv2(out)
+        out = self.relu(out)
+    
+        out = self.conv3(out)
+        out = self.relu(out)
+        
+        out = self.conv4(out)
+        out = self.relu(out)
+        
+        out = self.conv5(out)
+        out = self.relu(out)
+        
         return out
     
 class NALMU(nn.Module, HSUModel):
@@ -367,25 +302,25 @@ class NALMU(nn.Module, HSUModel):
     
     Args:
         T (int, optional): Number of layers in the unrolled neural network (default: 10)
-        b (int, optional): Number of observations (eg Wavelengt bands) (default: 64)
+        B (int, optional): Number of observations (eg Wavelengt bands) (default: 64)
         c (int, optional): Number of sources (eg endmembers) (default: 4)
-        n (int, optional): Number of samples (eg pixels) (default: 10000)
+        N (int, optional): Number of samples (eg pixels) (default: 10000)
         shared (bool, optional): Whether to share the weights across unrolled layers or not (default: False)
     """
-    def __init__(self, T=10, b=64, c=4, n=10000, shared=False):
+    def __init__(self, T=10, B=64, c=4, N=10000, shared=False):
         super(NALMU, self).__init__()
         
         self.T = T 
-        self.b = b 
+        self.B = B 
         self.c = c 
-        self.n = n
+        self.N = N
         self.shared = shared
         
         # A cause de la nonnegativite, on va utiliser exp(Ae) plutot que Ae => pour que exp(Ae) ne comprenne que des 1, il faut que Ae n'ait que des zeros
-        self.Ae = torch.zeros((b,c)).to(torch.float32) # Ae doit etre le meme pour tous les minibatchs, on ne prend qu'un seul E pour l'initialisation (arbitrairement, le premier du mini-batch) et on fait un repeat dans les iterations du LMU
+        self.Ae = torch.zeros((B,c)).to(torch.float32) # Ae doit etre le meme pour tous les minibatchs, on ne prend qu'un seul E pour l'initialisation (arbitrairement, le premier du mini-batch) et on fait un repeat dans les iterations du LMU
         
         # A cause de la nonnegativite, on va utiliser exp(Aa) plutot que Aa => pour que exp(Aa) ne comprenne que des 1, il faut que Aa n'ait que des zeros
-        self.Aa = torch.zeros((c,n)).to(torch.float32) # Aa doit etre le meme pour tous les minibatchs, on ne prend qu'un seul A pour l'initialisation (arbitrairement, le premier du mini-batch) et on fait un repeat dans les iterations du LMU
+        self.Aa = torch.zeros((c,N)).to(torch.float32) # Aa doit etre le meme pour tous les minibatchs, on ne prend qu'un seul A pour l'initialisation (arbitrairement, le premier du mini-batch) et on fait un repeat dans les iterations du LMU
             
         #Ae est de taille [m,n]
         if not self.shared:
@@ -401,8 +336,9 @@ class NALMU(nn.Module, HSUModel):
         
         E_pred_tab = []
         A_pred_tab = []
+        
         # Initialize E and A
-        E_pred = E_init
+        E_pred = E_init # See train_LMU_checkpoint_CK line 30 for init
         A_pred = A_init
 
         for t in range(self.T):
@@ -435,34 +371,34 @@ class RALMU(nn.Module, HSUModel):
     
     Args:
         T (int, optional): Number of layers in the unrolled neural network (default: 10)
-        b (int, optional): Number of observations (eg Waveleight bands) (default: 64)
+        B (int, optional): Number of observations (eg Waveleight bands) (default: 64)
         c (int, optional): Number of sources (eg endmembers) (default: 4)
         shared (bool, optional): Whether to share the weights across unrolled layers or not (default: False)
         conv_size (int, optional): the kernel size of the 2D-CNN for Aa (default: 3)
-        size_A_image (list, optional): The input image size (default: [4,256,256])
+        size_image_A (list, optional): The input image size (default: [4,256,256])
     """
-    def __init__(self, T=10, b=64, c=4, shared=False, conv_size=3, size_A_image=[4,256,256]):
+    def __init__(self, T=10, B=64, c=4, shared=False, conv_size=3, size_image_A=[4,256,256]):
         super(RALMU, self).__init__()
         
         self.T = T
         self.shared = shared
-        self.size_A_image = size_A_image
+        self.size_image_A = size_image_A
         
         if self.shared:
-            tab_mlp_E = nn.ParameterList([MLP((b,c))])
+            tab_mlp_E = nn.ParameterList([MLP((B,c))])
         else:
             tab_mlp_E = nn.ParameterList([])
             for ii in range(T):
-                tab_mlp_E.append(MLP((b,c)))
+                tab_mlp_E.append(MLP((B,c)))
         # On pourrait ici pre-entrainer les reseaux a predire un E appris par un premier reseau
         self.tab_mlp_E = tab_mlp_E
         
         if self.shared:
-            tab_mlp_A = nn.ParameterList([CNN2D(self.size_A_image, conv_size=conv_size)])
+            tab_mlp_A = nn.ParameterList([CNN2D(self.size_image_A, conv_size=conv_size)])
         else:
             tab_mlp_A = nn.ParameterList([])
             for ii in range(T):
-                tab_mlp_A.append(CNN2D(self.size_A_image, conv_size=conv_size))
+                tab_mlp_A.append(CNN2D(self.size_image_A, conv_size=conv_size))
         
         # On pourrait ici pre-entrainer les reseaux a predir un A appris par un premier reseau
         self.tab_mlp_A = tab_mlp_A
@@ -470,16 +406,22 @@ class RALMU(nn.Module, HSUModel):
         
     def forward(self, X, E_init=None, A_init=None, indMbDisp=-1):
         # A_initNetA : of shape (nb batchs, nb sources, nb pixel), i.e. a vectorized image
-        A_init_im = torch.reshape(A_init, (X.size()[0],self.size_A_image[0],self.size_A_image[1],self.size_A_image[2]))
+        A_init_im = torch.reshape(A_init, (X.size()[0],self.size_image_A[0],self.size_image_A[1],self.size_image_A[2]))
         
         E_pred_tab = []
         A_pred_tab = []
         
         # Initialize A
-        A_pred = A_init.clone()
+        if A_init is not None:
+            A_pred = A_init.clone()
+        else:
+            A_pred = torch.ones(self.size_image_A)
         
         # Initialize E
-        E_pred = E_init.clone()
+        if E_init is not None:
+            E_pred = E_init.clone()
+        else:
+            E_pred = torch.ones((self.B, self.c))
         
         soft = torch.nn.Softplus()
         
@@ -487,11 +429,11 @@ class RALMU(nn.Module, HSUModel):
             
             #------------- Partie sur A --------------
             if self.shared:
-                Aa = self.tab_mlp_A[0](A_pred.reshape((X.size()[0],self.size_A_image[0],self.size_A_image[1],self.size_A_image[2])))
+                Aa = self.tab_mlp_A[0](A_pred.reshape((X.size()[0],self.size_image_A[0],self.size_image_A[1],self.size_image_A[2])))
             else:
-                Aa = self.tab_mlp_A[t](A_pred.reshape((X.size()[0],self.size_A_image[0],self.size_A_image[1],self.size_A_image[2])))
+                Aa = self.tab_mlp_A[t](A_pred.reshape((X.size()[0],self.size_image_A[0],self.size_image_A[1],self.size_image_A[2])))
                     
-            Aa = torch.reshape(Aa, (X.size()[0],self.size_A_image[0],self.size_A_image[1]*self.size_A_image[2]))
+            Aa = torch.reshape(Aa, (X.size()[0],self.size_image_A[0],self.size_image_A[1]*self.size_image_A[2]))
 
             Aa = soft(Aa)# For nonnegativity
 

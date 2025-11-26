@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 from torch.nn.functional import normalize
-from munkres import Munkres
+from src.utils.munkres import Munkres
 import numpy as np
 
 def correctPerm_torch(W0_tc,W_tc):
