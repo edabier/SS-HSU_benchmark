@@ -46,6 +46,8 @@ class ReconstructionError(SelfSupervisedTrainer):
         train_losses = []
         for _ in range(self.epochs):
             
+            train_loss = 0
+            
             for Y, E, A in dataloader:
                 self.optimizer.zero_grad()
                 
@@ -55,10 +57,14 @@ class ReconstructionError(SelfSupervisedTrainer):
                     e_hat, a_hat, y_hat = self.model(Y)
                     
                 loss = self.criterion(Y, y_hat)
-                train_losses.append(loss)
+                train_loss += loss.item()
+                # train_losses.append(loss)
                 
                 loss.backward()
                 self.optimizer.step()
+        
+            train_loss /= len(dataloader)
+            train_losses.append(train_loss)
             
         return e_hat, a_hat, train_losses
       
@@ -95,6 +101,8 @@ class DIP(SelfSupervisedTrainer):
         train_losses = []
         for _ in range(self.epochs):
             
+            train_loss = 0
+            
             for Y, E, A in dataloader:
                 self.optimizer.zero_grad()
                 
@@ -102,10 +110,14 @@ class DIP(SelfSupervisedTrainer):
                 e_hat, a_hat, y_hat = self.model(z)
                 
                 loss = self.criterion(Y, y_hat)
-                train_losses.append(loss)
+                # train_losses.append(loss)
+                train_loss += loss.item()
                 
                 loss.backward()
                 self.optimizer.step()
+        
+            train_loss /= len(dataloader)
+            train_losses.append(train_loss)
             
         return e_hat, a_hat, train_losses
     
@@ -166,6 +178,8 @@ class TwoStagesNet(SelfSupervisedTrainer):
         train_losses = []
         for _ in range(self.epochs):
             
+            train_loss = 0
+            
             for Y, E, A in dataloader:
                 self.optimizer.zero_grad()
                 
@@ -175,25 +189,20 @@ class TwoStagesNet(SelfSupervisedTrainer):
                 y_hat = self.denoiser(r)
                 
                 loss = self.criterion(Y, y_hat, r, n)
-                train_losses.append(loss)
+                # train_losses.append(loss)
+                train_loss += loss.item()
                 
                 loss.backward()
                 self.optimizer.step()
+        
+            train_loss /= len(dataloader)
+            train_losses.append(train_loss)
             
         return e_hat, a_hat, train_losses
           
 class EGU_Net(SelfSupervisedTrainer):
     """
     Defines an Endmember Guided SSL training method based on Hong et al. 2021
-    We optimize the model to move the representation of similar patches close together, and move apart different ones
-    We use the NT-Xent loss for this
-    
-    We split the input image Y in patches
-    We create positive augmentations of each patch
-    We select negative patches in the image that don't contain the same EMs as the current patch
-    We forward the patch in the model to get estimated A and E
-    We project the estimated As of the positive and negative samples using the projection head
-    We compute the NT-Xent loss between every pair, minimizing it for positive pairs, and maximizing it for negative ones
 
     Args:
         model: the model to train
@@ -269,6 +278,8 @@ class EGU_Net(SelfSupervisedTrainer):
         mse = nn.MSELoss()
         
         for epoch in range(self.epochs):
+            
+            train_loss = 0
         
             for Y, E, A in dataloader:
                 self.optimizer.zero_grad()
@@ -286,11 +297,15 @@ class EGU_Net(SelfSupervisedTrainer):
                 e_hat, a_hat, y_hat = self.model(Y)
                 
                 # MSE between y_hat and y   
-                loss += mse(y, y_hat)
-                train_losses.append(loss)
+                loss += mse(Y, y_hat)
+                # train_losses.append(loss)
+                train_loss += loss.item()
                     
                 loss.backward()
                 self.optimizer.step()
+        
+            train_loss /= len(dataloader)
+            train_losses.append(train_loss)
             
         return e_hat, a_hat, train_losses
     
@@ -416,6 +431,8 @@ class GeneratedDataset(SelfSupervisedTrainer):
         train_losses = []
         for _ in range(self.epochs):
             
+            train_loss = 0
+            
             for i in range(self.dataset_size):
                 
                 e_gt = self.dataset.E[i]
@@ -427,10 +444,14 @@ class GeneratedDataset(SelfSupervisedTrainer):
                 e_hat, a_hat, y_hat = self.model(y_gt)
                 
                 loss = self.criterion(e_gt, e_hat, a_gt, a_hat)
-                train_losses.append(loss)
+                # train_losses.append(loss)
+                train_loss += loss.item()
                 
                 loss.backward()
                 self.optimizer.step()
+                
+            train_loss /= self.dataset_size
+            train_losses.append(train_loss)
             
         return e_hat, a_hat, train_losses
 

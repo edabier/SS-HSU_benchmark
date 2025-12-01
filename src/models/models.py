@@ -68,10 +68,14 @@ class MLAP_AE(nn.Module, HSUModel):
             nn.Sigmoid(),
             nn.Linear(256, B),
             nn.BatchNorm1d(B),
-            nn.Sigmoid()            
+            nn.Sigmoid()        
         )
     
     def forward(self, x):
+        
+        if x.dim() < 3:
+            x = x.unsqueeze(0) # Add a batch dimension for inference
+            
         # x: (batch, B, N)
         batch, B, N = x.shape
 
@@ -140,6 +144,10 @@ class CNNAE_linear(nn.Module, HSUModel):
         self.decoder = nn.Linear(in_features=self.patch_size**2*self.c, out_features=self.patch_size**2*self.B)
 
     def forward(self, x):
+        
+        if x.dim() < 3:
+            x = x.unsqueeze(0) # Add a batch dimension for inference
+            
         batch, B, N = x.shape
         h = int(N**0.5)
         x = x.reshape(batch, B, h, h)
@@ -204,6 +212,9 @@ class CNNAEU(nn.Module, HSUModel):
 
     def forward(self, x):
         
+        if x.dim() < 3:
+            x = x.unsqueeze(0) # Add a batch dimension for inference
+        
         batch, B, N = x.shape
         h = int(N**0.5)
         x = x.reshape(batch, B, h, h)
@@ -250,7 +261,7 @@ class Transformer_AE(nn.Module, HSUModel):
             nn.Linear(dim, im_size ** 2),
         )
         
-        self.smootA = nn.Sequential(
+        self.smooth = nn.Sequential(
             nn.Conv2d(c, c, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1)),
             nn.Softmax(dim=1),
         )
@@ -267,20 +278,24 @@ class Transformer_AE(nn.Module, HSUModel):
 
     def forward(self, x):
         
-        # x = x.squeeze(0)
-        batch, B, N = x.shape
+        if x.dim() < 3:
+            x = x.unsqueeze(0) # Add a batch dimension for inference
+            
+        batch, patch, N = x.shape
         h = int(N**0.5)
-        # x = x.reshape(batch, B, h, h)
-        x = x.transpose(1, 0).view(1, -1, h, h).squeeze(0)
+        x = x.reshape(batch, patch, h, h)
         
         abu_est = self.encoder(x)
-        print(abu_est.shape)
         cls_emb = self.vtrans(abu_est)
-        cls_emb = cls_emb.vieE(1, self.c, -1)
-        abu_est = self.upscale(cls_emb).vieE(1, self.c, self.im_size, self.im_size)
+        cls_emb = cls_emb.view(1, self.c, -1)
+        abu_est = self.upscale(cls_emb).view(1, self.c, self.im_size, self.im_size)
         abu_est = self.smooth(abu_est)
         re_result = self.decoder(abu_est)
-        e_est = self.decoder[0].weight.data
+        e_est = self.decoder[0].weight.data[:,:,0,0]
+        
+        abu_est = abu_est.reshape(batch, abu_est.shape[1], N)
+        re_result = re_result.reshape(batch, re_result.shape[1], N)
+        
         return e_est, abu_est, re_result
 
 
@@ -304,7 +319,7 @@ class MLP(nn.Module):
         self.relu = nn.ReLU()
         
     def forward(self,x):
-        y = x.reshape((x.size()[0],self.input_size[0]*self.input_size[1]))
+        y = x.reshape((x.shape[0],self.input_size[0]*self.input_size[1]))
         
         out = self.a1(y)
         out = self.relu(out)
@@ -314,7 +329,7 @@ class MLP(nn.Module):
     
         out = self.a3(out)
       
-        output = out.reshape((x.size()[0],self.input_size[0],self.input_size[1]))
+        output = out.reshape((x.shape[0],self.input_size[0],self.input_size[1]))
         return output
     
 class CNN2D(nn.Module):
@@ -392,14 +407,20 @@ class NALMU(nn.Module, HSUModel):
             
     def forward(self, X, E_init=None, A_init=None, epoch=-1):
         # Remarque : les tailles de E sont fixees des l'initialisation du reseau et celle de A l'est Mais on peut se servir de E_init et A_init pour initialiser le reseau, par exemple avec un VCA.
+        
+        if x.dim() < 3:
+            x = x.unsqueeze(0) # Add a batch dimension for inference
+        
         b_size = X.shape[0]
         
         E_pred_tab = []
         A_pred_tab = []
         
         # Initialize E and A
-        E_pred = E_init # See train_LMU_checkpoint_CK line 30 for init
-        A_pred = A_init
+        E_pred = torch.ones(b_size, self.B, self.c)
+        A_pred = torch.ones(b_size, self.c, self.N)
+        # E_pred = E_init # See train_LMU_checkpoint_CK line 30 for init
+        # A_pred = A_init
 
         for t in range(self.T):
             if hasattr(self, 'shared') and self.shared:
@@ -441,6 +462,8 @@ class RALMU(nn.Module, HSUModel):
         super(RALMU, self).__init__()
         
         self.T = T
+        self.B = B
+        self.c = c
         self.shared = shared
         self.size_image_A = [c, im_size, im_size]
         
@@ -463,25 +486,27 @@ class RALMU(nn.Module, HSUModel):
         # On pourrait ici pre-entrainer les reseaux a predir un A appris par un premier reseau
         self.tab_mlp_A = tab_mlp_A
 
-        
     def forward(self, X, E_init=None, A_init=None, indMbDisp=-1):
         # A_initNetA : of shape (nb batchs, nb sources, nb pixel), i.e. a vectorized image
-        A_init_im = torch.reshape(A_init, (X.size()[0],self.size_image_A[0],self.size_image_A[1],self.size_image_A[2]))
-        
+    
         E_pred_tab = []
         A_pred_tab = []
         
-        # Initialize A
-        if A_init is not None:
-            A_pred = A_init.clone()
-        else:
-            A_pred = torch.ones(self.size_image_A)
+        if x.dim() < 3:
+            x = x.unsqueeze(0) # Add a batch dimension for inference
+            
+        b_size = X.shape[0]
         
-        # Initialize E
-        if E_init is not None:
-            E_pred = E_init.clone()
-        else:
-            E_pred = torch.ones((self.B, self.c))
+        # Initialize A and E
+        if A_init == None:
+            A_init = torch.ones(b_size, self.c, self.size_image_A[1]**2)
+        if E_init == None:
+            E_init = torch.ones(b_size, self.B, self.c)
+        
+        A_pred = A_init.clone()
+        E_pred = E_init.clone()
+        
+        # A_init_im = torch.reshape(A_init, (b_size, self.size_image_A[0], self.size_image_A[1], self.size_image_A[2]))
         
         soft = torch.nn.Softplus()
         
@@ -489,11 +514,11 @@ class RALMU(nn.Module, HSUModel):
             
             #------------- Partie sur A --------------
             if self.shared:
-                Aa = self.tab_mlp_A[0](A_pred.reshape((X.size()[0],self.size_image_A[0],self.size_image_A[1],self.size_image_A[2])))
+                Aa = self.tab_mlp_A[0](A_pred.reshape((b_size, self.size_image_A[0], self.size_image_A[1], self.size_image_A[2])))
             else:
-                Aa = self.tab_mlp_A[t](A_pred.reshape((X.size()[0],self.size_image_A[0],self.size_image_A[1],self.size_image_A[2])))
+                Aa = self.tab_mlp_A[t](A_pred.reshape((b_size, self.size_image_A[0], self.size_image_A[1], self.size_image_A[2])))
                     
-            Aa = torch.reshape(Aa, (X.size()[0],self.size_image_A[0],self.size_image_A[1]*self.size_image_A[2]))
+            Aa = torch.reshape(Aa, (b_size, self.size_image_A[0], self.size_image_A[1]*self.size_image_A[2]))
 
             Aa = soft(Aa)# For nonnegativity
 

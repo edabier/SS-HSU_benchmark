@@ -228,7 +228,7 @@ class HSI_dataset(Dataset):
         # Return the patch and the full E
         return Y_patch, self.E, A_patch
    
-def create_dataloader(dataset, dev, train_split=None, patch_size=None, batch_size=1):
+def create_dataloader(dataset, dev, train_split=None, patch_size=None, batch_size=1, dtype=torch.float32):
     """
     Creates dataloader(s) for a given dataset
     
@@ -240,12 +240,12 @@ def create_dataloader(dataset, dev, train_split=None, patch_size=None, batch_siz
     """
     if patch_size is None:
         
-        dataset = HSI_dataset(dataset)
+        dataset = HSI_dataset(dataset, dtype=dtype)
         train_loader = DataLoader(dataset, batch_size)
         return train_loader
     
     else:
-        dataset = HSI_dataset(dataset, patch_size)
+        dataset = HSI_dataset(dataset, patch_size, dtype=dtype)
         
         generator = torch.Generator(dev)
         train_set, test_set = random_split(dataset, lengths=[train_split, 1-train_split], generator=generator)
