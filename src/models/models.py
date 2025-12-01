@@ -30,18 +30,20 @@ class MLAP_AE(nn.Module, HSUModel):
     """
     Adaptation of the MLP Auto encoder from Hong et al. 2021
     
-    Args: 
-        c (int): the number of endmembers to extract
-        in_size (int): the size of the input tensor
+    Args:
+        B (int): the number of spectral bands
+        c (int): the number of endmembers
     """
-    def __init__(self, c, in_size, seed=None):
+    def __init__(self, B, c, seed=None):
         super(MLAP_AE, self).__init__()
+        self.B = B
+        self.c = c
         
         if seed is not None:
             torch.manual_seed(seed)
         
         self.encoder = nn.Sequential(
-            nn.Linear(in_size, 256),
+            nn.Linear(B, 256),
             nn.BatchNorm1d(256),
             nn.Dropout(),
             nn.Tanh(),
@@ -64,26 +66,47 @@ class MLAP_AE(nn.Module, HSUModel):
             nn.Linear(128, 256),
             nn.BatchNorm1d(256),
             nn.Sigmoid(),
-            nn.Linear(256, in_size),
-            nn.BatchNorm1d(in_size),
+            nn.Linear(256, B),
+            nn.BatchNorm1d(B),
             nn.Sigmoid()            
         )
     
     def forward(self, x):
-        encoded = self.encoder(x)
-        abund = F.softmax(encoded)
-        x_hat = self.decoder(abund)
-        e_est = self.decoder.weight.data
+        # x: (batch, B, N)
+        batch, B, N = x.shape
+
+        # --- flatten spatial dimension N ---
+        x_flat = x.permute(0, 2, 1)         # (batch, N, B)
+        x_flat = x_flat.reshape(batch * N, B)  # (batch*N, B)
+
+        encoded = self.encoder(x_flat)      # (batch*N, c)
+        abund_flat = F.softmax(encoded, dim=-1)   # (batch*N, c)
+
+        abund = abund_flat.reshape(batch, N, self.c).permute(0, 2, 1)  # (batch, c, N)
+        
+        x_hat_flat = self.decoder(abund_flat)  # (batch*N, B)
+        x_hat = x_hat_flat.reshape(batch, N, B).permute(0, 2, 1)  # (batch, B, N)
+
+        Ws = [m.weight for m in self.decoder if isinstance(m, nn.Linear)]
+        e_est = torch.linalg.multi_dot(Ws[::-1])
+        
         return e_est, abund, x_hat
 
 class CNNAE_linear(nn.Module, HSUModel):
     """
     Adaptation of the CNNAEU implementation from the HySUPP repo
+    Needs patching because the decoder is a linear mapping from (c x N) to (B x N) which can grow enormous
+    
+    Args:
+        B (int): the number of spectral bands
+        c (int): the number of endmembers
+        patch_size (int, optional): how much to split the input image (default: 5)
     """
-    def __init__(self, B, c, scale=3.0):
+    def __init__(self, B, c, patch_size=5, scale=3.0):
         super().__init__()
         self.B = B
         self.c = c
+        self.patch_size = patch_size
 
         self.device = torch.device(
             "cuda:0" if torch.cuda.is_available() else "cpu",
@@ -114,18 +137,34 @@ class CNNAE_linear(nn.Module, HSUModel):
             nn.Dropout2d(p=0.2),
         )
 
-        self.decoder = nn.Linear(in_features=self.H*self.W*self.c, out_features=self.H*self.W*self.B)
+        self.decoder = nn.Linear(in_features=self.patch_size**2*self.c, out_features=self.patch_size**2*self.B)
 
     def forward(self, x):
+        batch, B, N = x.shape
+        h = int(N**0.5)
+        x = x.reshape(batch, B, h, h)
+        
         code = self.encoder(x)
+        
         abund = F.softmax(code * self.scale, dim=1)
+        a_hat = abund.reshape(batch, self.c, N)
+        abund = abund.reshape(batch, -1)
+        
         x_hat = self.decoder(abund)
+        x_hat = x_hat.reshape(batch, B, N)
         e_est = self.decoder.weight.data
-        return e_est, abund, x_hat
+        p = self.patch_size**2
+        e_hat = e_est.reshape(self.B, p, self.c, p)[..., 0, :, 0].unsqueeze(0).expand(batch, self.B, self.c)
+        
+        return e_hat, a_hat, x_hat
 
 class CNNAEU(nn.Module, HSUModel):
     """
     CNNAEU implementation from the HySUPP repo
+    
+    Args:
+        B (int): the number of spectral bands
+        c (int): the number of endmembers
     """
     def __init__(self, B, c, scale=3.0):
         super().__init__()
@@ -164,21 +203,34 @@ class CNNAEU(nn.Module, HSUModel):
         self.decoder = nn.Conv2d(self.c, self.B, kernel_size=11, padding=5, padding_mode="reflect", bias=False)
 
     def forward(self, x):
+        
+        batch, B, N = x.shape
+        h = int(N**0.5)
+        x = x.reshape(batch, B, h, h)
+        
         code = self.encoder(x)
+        
         abund = F.softmax(code * self.scale, dim=1)
+        a_hat = abund.reshape(batch, self.c, N)
+        # abund = abund.reshape(batch, -1)
+        
         x_hat = self.decoder(abund)
-        e_est = self.decoder.weight.data.mean((2, 3))
-        return e_est, abund, x_hat
+        x_hat = x_hat.reshape(batch, B, N)
+        e_hat = self.decoder.weight.data.mean((2, 3))
+        
+        return e_hat, a_hat, x_hat
 
 class Transformer_AE(nn.Module, HSUModel):
     """
     Args:
-        c (int): the number of endmembers
         B (int): the number of spectral bands
+        c (int): the number of endmembers
+        im_size (int): the height (or width) of the image (expects square image)
+        patch_size (int, optional): how much to split the input image (default: 5)
     """
-    def __init__(self, B, c, size, patch, dim):
+    def __init__(self, B, c, im_size, patch_size=5, dim=24):
         super(Transformer_AE, self).__init__()
-        self.B, self.c, self.size, self.dim = B, c, size, dim
+        self.B, self.c, self.im_size, self.dim = B, c, im_size, dim
         self.encoder = nn.Sequential(
             nn.Conv2d(B, 128, kernel_size=(1, 1), stride=(1, 1), padding=(0, 0)),
             nn.BatchNorm2d(128, momentum=0.9),
@@ -187,15 +239,15 @@ class Transformer_AE(nn.Module, HSUModel):
             nn.Conv2d(128, 64, kernel_size=(1, 1), stride=(1, 1), padding=(0, 0)),
             nn.BatchNorm2d(64, momentum=0.9),
             nn.LeakyReLU(),
-            nn.Conv2d(64, (dim*c)//patch**2, kernel_size=(1, 1), stride=(1, 1), padding=(0, 0)),
-            nn.BatchNorm2d((dim*c)//patch**2, momentum=0.5),
+            nn.Conv2d(64, (dim*c)//patch_size**2, kernel_size=(1, 1), stride=(1, 1), padding=(0, 0)),
+            nn.BatchNorm2d((dim*c)//patch_size**2, momentum=0.5),
         )
 
-        self.vtrans = transformer.ViT(image_size=size, patch_size=patch, dim=(dim*c), depth=2,
+        self.vtrans = transformer.ViT(image_size=im_size, patch_size=patch_size, dim=(dim*c), depth=2,
                                       heads=8, mlp_dim=12, pool='cls')
         
         self.upscale = nn.Sequential(
-            nn.Linear(dim, size ** 2),
+            nn.Linear(dim, im_size ** 2),
         )
         
         self.smootA = nn.Sequential(
@@ -214,10 +266,18 @@ class Transformer_AE(nn.Module, HSUModel):
             nn.init.kaiming_normal_(m.weight.data)
 
     def forward(self, x):
+        
+        # x = x.squeeze(0)
+        batch, B, N = x.shape
+        h = int(N**0.5)
+        # x = x.reshape(batch, B, h, h)
+        x = x.transpose(1, 0).view(1, -1, h, h).squeeze(0)
+        
         abu_est = self.encoder(x)
+        print(abu_est.shape)
         cls_emb = self.vtrans(abu_est)
         cls_emb = cls_emb.vieE(1, self.c, -1)
-        abu_est = self.upscale(cls_emb).vieE(1, self.c, self.size, self.size)
+        abu_est = self.upscale(cls_emb).vieE(1, self.c, self.im_size, self.im_size)
         abu_est = self.smooth(abu_est)
         re_result = self.decoder(abu_est)
         e_est = self.decoder[0].weight.data
@@ -375,14 +435,14 @@ class RALMU(nn.Module, HSUModel):
         c (int, optional): Number of sources (eg endmembers) (default: 4)
         shared (bool, optional): Whether to share the weights across unrolled layers or not (default: False)
         conv_size (int, optional): the kernel size of the 2D-CNN for Aa (default: 3)
-        size_image_A (list, optional): The input image size (default: [4,256,256])
+        im_size (int, optional): The input image's height (or width), expects square images (default: 256)
     """
-    def __init__(self, T=10, B=64, c=4, shared=False, conv_size=3, size_image_A=[4,256,256]):
+    def __init__(self, T=10, B=64, c=4, shared=False, conv_size=3, im_size=256):
         super(RALMU, self).__init__()
         
         self.T = T
         self.shared = shared
-        self.size_image_A = size_image_A
+        self.size_image_A = [c, im_size, im_size]
         
         if self.shared:
             tab_mlp_E = nn.ParameterList([MLP((B,c))])

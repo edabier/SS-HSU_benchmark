@@ -1,5 +1,6 @@
 import torch
 import torch.linalg as LA
+from math import *
 from sklearn.cluster import KMeans
 # from cvxopt import matrix, solvers
 import numpy as np
@@ -141,6 +142,74 @@ def FCLS(Y, E):
     sum_abd[sum_abd == 0] = 1  # Set to 1 to avoid NaN
     
     A = abd_clipped / sum_abd
+
+    return A
+
+def project_rows_to_simplex(H):
+    # H: (n_rows, dim)
+    sorted_H, _ = torch.sort(H, descending=True, dim=1)
+    cumsum = torch.cumsum(sorted_H, dim=1) - 1
+    k = (sorted_H > (cumsum / torch.arange(1, H.size(1)+1, device=H.device))).sum(dim=1) - 1
+    theta = cumsum[torch.arange(H.size(0)), k] / (k + 1)
+    return torch.clamp(H - theta.unsqueeze(1), min=0)
+
+def FCLS_2(Y, E, A0=None, inner_iter=300, delta=1e-6, alpha0=0.05):
+    """
+    Solves min_H >= 0  ||Y - EA||_F^2 using fast projected gradient.
+
+    Y : (B, N)
+    E : (B, c)
+    A0: optional (c, N)
+    """
+
+    # Precompute constants
+    EtE = E.T @ E           # c x c
+    EtY = E.T @ Y           # c x N
+    L = torch.linalg.norm(EtE, 2)  # Lipschitz
+
+    # Initialization
+    if A0 is None:
+        A = torch.clamp(EtY / (torch.diag(EtE).unsqueeze(1) + 1e-12), min=0)
+    else:
+        A = A0.clone()
+
+    # Choose projection function
+    project = lambda Z: project_rows_to_simplex(Z.T).T # keep A as c×N
+
+    A = project(A)
+    A_ = A.clone()
+
+    # FPGM parameters
+    alpha_prev = alpha0
+
+    eps0 = None
+    for _ in range(inner_iter):
+
+        A_prev = A
+        # Gradient: Wᵀ(WA_ - X)
+        grad = EtE @ A_ - EtY
+
+        # Forward step
+        A = A_ - grad / L
+
+        # Projection
+        A = project(A)
+
+        # Compute FPGM update
+        alpha_new = (torch.sqrt(torch.tensor(alpha_prev**4 + 4*alpha_prev**2)) - alpha_prev**2) / 2
+        beta = alpha_prev * (1 - alpha_prev) / (alpha_prev**2 + alpha_new)
+
+        # Nesterov update
+        Y = A + beta * (A - A_prev)
+
+        # Stopping criterion
+        diff = torch.norm(A - A_prev, p='fro')
+        if eps0 is None:
+            eps0 = diff
+        if diff <= delta * eps0:
+            break
+
+        alpha_prev = alpha_new
 
     return A
 

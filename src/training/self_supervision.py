@@ -14,6 +14,54 @@ class SelfSupervisedTrainer():
     def train(self, y):
         raise NotImplementedError(f"Training method is not implemented for {self}")
 
+class ReconstructionError(SelfSupervisedTrainer):
+    """
+    Defines a training based simply on the reconstruction error
+
+    Args:
+        model: the model to train
+        pixelwise (bool, optional): whether to apply the model pixel-wise or entire patches (default: False)
+        criterion: the function to optimize by training the model, by default the MSE loss (default: None)
+        optimizer: the optimizer to use for the training, by default, we use AdamW (default: None)
+    """
+    def __init__(self, model, pixelwise=False, criterion=None, optimizer=None, epochs=200, lr=0.001, batch_size=1):
+        super().__init__()
+        self.model = model
+        self.pixelwise = pixelwise
+        self.epochs = epochs
+        self.lr = lr
+        self.batch_size = batch_size 
+        
+        if optimizer is not None:
+            self.optimizer = optimizer
+        else:
+            self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=self.lr)
+        
+        if criterion is not None:
+            self.criterion = criterion
+        else:
+            self.criterion = nn.MSELoss()
+    
+    def train(self, dataloader):
+        train_losses = []
+        for _ in range(self.epochs):
+            
+            for Y, E, A in dataloader:
+                self.optimizer.zero_grad()
+                
+                if self.pixelwise: 
+                    e_hat, a_hat, y_hat = map(lambda x: torch.stack(x, dim=2).reshape(*Y.shape[:2], 2), zip(*self.model(Y.reshape(Y.shape[0]*Y.shape[2], Y.shape[1]))))#zip(*[self.model(Y.transpose(1,2).reshape(-1, Y.shape[1])[:, :,i]) for i in range(Y.shape[2])]))
+                else:
+                    e_hat, a_hat, y_hat = self.model(Y)
+                    
+                loss = self.criterion(Y, y_hat)
+                train_losses.append(loss)
+                
+                loss.backward()
+                self.optimizer.step()
+            
+        return e_hat, a_hat, train_losses
+      
 class DIP(SelfSupervisedTrainer):
     """
     Defines a Deep Image Prior-type of training based on Ulyanov et al. 2020.
@@ -43,19 +91,21 @@ class DIP(SelfSupervisedTrainer):
         else:
             self.criterion = nn.MSELoss()
     
-    def train(self, y):
+    def train(self, dataloader):
         train_losses = []
         for _ in range(self.epochs):
-            self.optimizer.zero_grad()
             
-            z = torch.randn_like(y)
-            e_hat, a_hat, y_hat = self.model(z)
-            
-            loss = self.criterion(y, y_hat)
-            train_losses.append(loss)
-            
-            loss.backward()
-            self.optimizer.step()
+            for Y, E, A in dataloader:
+                self.optimizer.zero_grad()
+                
+                z = torch.randn_like(Y)
+                e_hat, a_hat, y_hat = self.model(z)
+                
+                loss = self.criterion(Y, y_hat)
+                train_losses.append(loss)
+                
+                loss.backward()
+                self.optimizer.step()
             
         return e_hat, a_hat, train_losses
     
@@ -112,66 +162,26 @@ class TwoStagesNet(SelfSupervisedTrainer):
         
         return loss_forward + loss_denoiser + loss_sad
     
-    def train(self, y):
+    def train(self, dataloader):
         train_losses = []
         for _ in range(self.epochs):
-            self.optimizer.zero_grad()
             
-            e_hat, a_hat, r = self.model(y)
-            n = torch.randn_like(y)
-            r += n
-            y_hat = self.denoiser(r)
-            
-            loss = self.criterion(y, y_hat, r, n)
-            train_losses.append(loss)
-            
-            loss.backward()
-            self.optimizer.step()
-            
-        return e_hat, a_hat, train_losses
-    
-class ReconstructionError(SelfSupervisedTrainer):
-    """
-    Defines a training based simply on the reconstruction error
-
-    Args:
-        model: the model to train
-        criterion: the function to optimize by training the model, by default the MSE loss (default: None)
-        optimizer: the optimizer to use for the training, by default, we use AdamW (default: None)
-    """
-    def __init__(self, model, criterion=None, optimizer=None, epochs=200, lr=0.001, batch_size=1):
-        super().__init__()
-        self.model = model
-        self.epochs = epochs
-        self.lr = lr
-        self.batch_size = batch_size 
-        
-        if optimizer is not None:
-            self.optimizer = optimizer
-        else:
-            self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=self.lr)
-        
-        if criterion is not None:
-            self.criterion = criterion
-        else:
-            self.criterion = nn.MSELoss()
-    
-    def train(self, y):
-        train_losses = []
-        for _ in range(self.epochs):
-            self.optimizer.zero_grad()
-            
-            e_hat, a_hat, y_hat = self.model(y)
-            
-            loss = self.criterion(y, y_hat)
-            train_losses.append(loss)
-            
-            loss.backward()
-            self.optimizer.step()
+            for Y, E, A in dataloader:
+                self.optimizer.zero_grad()
+                
+                e_hat, a_hat, r = self.model(Y)
+                n = torch.randn_like(Y)
+                r += n
+                y_hat = self.denoiser(r)
+                
+                loss = self.criterion(Y, y_hat, r, n)
+                train_losses.append(loss)
+                
+                loss.backward()
+                self.optimizer.step()
             
         return e_hat, a_hat, train_losses
-        
-    
+          
 class EGU_Net(SelfSupervisedTrainer):
     """
     Defines an Endmember Guided SSL training method based on Hong et al. 2021
@@ -252,7 +262,7 @@ class EGU_Net(SelfSupervisedTrainer):
         
         return pure_abds, e_avg
         
-    def train(self, y):
+    def train(self, dataloader):
         
         train_losses = []
         ce = nn.CrossEntropyLoss()
@@ -260,27 +270,28 @@ class EGU_Net(SelfSupervisedTrainer):
         
         for epoch in range(self.epochs):
         
-            self.optimizer.zero_grad()
-            
-            # Top part: unmixing pure pixels
-            # We create a small 2x2 image by repeating each pure pixel 4 times, and forward it to the model's encoder
-            abd, e_avg = self.extract_endmember_bundle(y)
-            end_mat = [torch.zeros(0)]*self.c
-            end_mat = [torch.cat((end_mat[i], e_avg[:,i].repeat(4))).reshape(e_avg.shape[0], 2, 2).unsqueeze(0) for i in range(self.c)]
-            predicted_abd = [self.model.encoder(end_mat[i]) for i in range(self.c)]
-            
-            # Cross entropy between abd and unmixed ems (since we repeated em to make it 2d, we only take the first dim)
-            loss = torch.sum([ce(abd[i], predicted_abd[i].squeeze(0)[:,0,0]) for i in range(self.c)])
-            
-            e_hat, a_hat, y_hat = self.model(y)
-            
-            # MSE between y_hat and y   
-            loss += mse(y, y_hat)
-            train_losses.append(loss)
+            for Y, E, A in dataloader:
+                self.optimizer.zero_grad()
                 
-            loss.backward()
-            self.optimizer.step()
-        
+                # Top part: unmixing pure pixels
+                # We create a small 2x2 image by repeating each pure pixel 4 times, and forward it to the model's encoder
+                abd, e_avg = self.extract_endmember_bundle(Y)
+                end_mat = [torch.zeros(0)]*self.c
+                end_mat = [torch.cat((end_mat[i], e_avg[:,i].repeat(4))).reshape(e_avg.shape[0], 2, 2).unsqueeze(0) for i in range(self.c)]
+                predicted_abd = [self.model.encoder(end_mat[i]) for i in range(self.c)]
+                
+                # Cross entropy between abd and unmixed ems (since we repeated em to make it 2d, we only take the first dim)
+                loss = torch.sum([ce(abd[i], predicted_abd[i].squeeze(0)[:,0,0]) for i in range(self.c)])
+                
+                e_hat, a_hat, y_hat = self.model(Y)
+                
+                # MSE between y_hat and y   
+                loss += mse(y, y_hat)
+                train_losses.append(loss)
+                    
+                loss.backward()
+                self.optimizer.step()
+            
         return e_hat, a_hat, train_losses
     
 class GeneratedDataset(SelfSupervisedTrainer):
@@ -310,7 +321,7 @@ class GeneratedDataset(SelfSupervisedTrainer):
         if criterion is not None:
             self.criterion = criterion
     
-    def create_dataset(self, y, c=4, n_vca=10, n_aug=10, c_var=0.4):
+    def generate_dataset(self, y, c=4, n_vca=10, n_aug=10, c_var=0.4):
         """
         - We first run n times the VCA algorithm to extract different EM
         - We group them and remove duplicate with a K-means algorithm to construct a library
@@ -397,7 +408,7 @@ class GeneratedDataset(SelfSupervisedTrainer):
         
         return loss_e + loss_a
     
-    def train(self, y):
+    def train(self):
         
         # Make sure the synthetic training dataset has been created first
         assert hasattr(self, "dataset"), "The training dataset must be generated first by running self.create_datatset()"
