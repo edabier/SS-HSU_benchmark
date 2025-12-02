@@ -22,6 +22,16 @@ class HSUModel():
         """
         raise NotImplementedError(f"Forward method not implemented for {self}")
 
+class weightConstraint(object):
+    def __init__(self):
+        pass
+    def __call__(self, module):
+        if hasattr(module, 'weight'):
+           # print("Entered")
+            w = module.weight.data
+            w = torch.clamp_min(w, 0)
+            module.weight.data = w
+
 """
 Autoencoders
 """
@@ -91,6 +101,8 @@ class MLAP_AE(nn.Module, HSUModel):
         x_hat_flat = self.decoder(abund_flat)  # (batch*N, B)
         x_hat = x_hat_flat.reshape(batch, N, B).permute(0, 2, 1)  # (batch, B, N)
 
+        constraints = weightConstraint()
+        self.decoder.apply(constraints)
         Ws = [m.weight for m in self.decoder if isinstance(m, nn.Linear)]
         e_est = torch.linalg.multi_dot(Ws[::-1])
         
@@ -160,7 +172,11 @@ class CNNAE_linear(nn.Module, HSUModel):
         
         x_hat = self.decoder(abund)
         x_hat = x_hat.reshape(batch, B, N)
+        
+        constraints = weightConstraint()
+        self.decoder.apply(constraints)
         e_est = self.decoder.weight.data
+        
         p = self.patch_size**2
         e_hat = e_est.reshape(self.B, p, self.c, p)[..., 0, :, 0].unsqueeze(0).expand(batch, self.B, self.c)
         
@@ -227,6 +243,9 @@ class CNNAEU(nn.Module, HSUModel):
         
         x_hat = self.decoder(abund)
         x_hat = x_hat.reshape(batch, B, N)
+        
+        constraints = weightConstraint()
+        self.decoder.apply(constraints)
         e_hat = self.decoder.weight.data.mean((2, 3))
         
         return e_hat, a_hat, x_hat
@@ -291,6 +310,9 @@ class Transformer_AE(nn.Module, HSUModel):
         abu_est = self.upscale(cls_emb).view(1, self.c, self.im_size, self.im_size)
         abu_est = self.smooth(abu_est)
         re_result = self.decoder(abu_est)
+        
+        constraints = weightConstraint()
+        self.decoder.apply(constraints)
         e_est = self.decoder[0].weight.data[:,:,0,0]
         
         abu_est = abu_est.reshape(batch, abu_est.shape[1], N)

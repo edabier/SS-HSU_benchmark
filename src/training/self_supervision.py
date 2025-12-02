@@ -9,6 +9,9 @@ import src.training.data_augmentation as data_aug
 import src.utils.extractor as extractor
 import src.utils.utils as utils
 
+# directory = "/home/ids/edabier/HSU/SS-HSU_benchmark/models"
+directory = "models/"
+
 class SelfSupervisedTrainer():
     def __init__(self):
         pass
@@ -91,10 +94,10 @@ class ReconstructionError(SelfSupervisedTrainer):
 
             # Save permanent model
             if epoch%10 == 0 and epoch > 0:
-                utils.save_model(self.model, self.optimizer, directory="/home/ids/edabier/HSU/models", epoch=epoch, is_permanent=True)
+                utils.save_model(self.model, self.optimizer, directory=directory, name="RE", epoch=epoch, is_permanent=True)
             
             # Save checkpoint
-            utils.save_model(self.model, self.optimizer, directory="/home/ids/edabier/HSU/models", epoch=epoch)
+            utils.save_model(self.model, self.optimizer, directory=directory, name="RE", epoch=epoch)
                 
         return e_hat, a_hat, train_losses
       
@@ -147,7 +150,7 @@ class DIP(SelfSupervisedTrainer):
             start_epoch = 0
             
         train_losses = []
-        for epoch_ in range(start_epoch, self.epochs):
+        for epoch in range(start_epoch, self.epochs):
             
             train_loss = 0
             
@@ -171,10 +174,10 @@ class DIP(SelfSupervisedTrainer):
 
             # Save permanent model
             if epoch%10 == 0 and epoch > 0:
-                utils.save_model(self.model, self.optimizer, directory="/home/ids/edabier/HSU/models", epoch=epoch, is_permanent=True)
+                utils.save_model(self.model, self.optimizer, directory=directory, name="DIP", epoch=epoch, is_permanent=True)
             
             # Save checkpoint
-            utils.save_model(self.model, self.optimizer, directory="/home/ids/edabier/HSU/models", epoch=epoch)
+            utils.save_model(self.model, self.optimizer, directory=directory, name="DIP", epoch=epoch)
             
         return e_hat, a_hat, train_losses
     
@@ -218,7 +221,7 @@ class TwoStagesNet(SelfSupervisedTrainer):
             nn.Linear(90, 45), nn.ReLU(), nn.Dropout(p=0.3), 
             nn.Linear(45, B))
     
-    def criterion(y_gt, y_hat, r, n):
+    def criterion(self, y_gt, y_hat, r, n):
         """
         The loss is the sum of:
         - MSE(y_hat, y_gt)
@@ -258,10 +261,17 @@ class TwoStagesNet(SelfSupervisedTrainer):
             for Y, E, A in dataloader:
                 self.optimizer.zero_grad()
                 
+                batch, B, N = Y.shape
+                
                 e_hat, a_hat, r = self.model(Y)
                 n = torch.randn_like(Y)
                 r += n
-                y_hat = self.denoiser(r)
+                
+                r_flat = r.permute(0, 2, 1)
+                r_flat = r_flat.reshape(batch * N, B)
+                y_hat = self.denoiser(r_flat)
+                
+                y_hat = y_hat.reshape(batch, N, B).permute(0, 2, 1) # (batch, B, N)
                 
                 loss = self.criterion(Y, y_hat, r, n)
                 # train_losses.append(loss)
@@ -277,10 +287,10 @@ class TwoStagesNet(SelfSupervisedTrainer):
 
             # Save permanent model
             if epoch%10 == 0 and epoch > 0:
-                utils.save_model(self.model, self.optimizer, directory="/home/ids/edabier/HSU/models", epoch=epoch, is_permanent=True)
+                utils.save_model(self.model, self.optimizer, directory=directory, name="TWOS", epoch=epoch, is_permanent=True)
             
             # Save checkpoint
-            utils.save_model(self.model, self.optimizer, directory="/home/ids/edabier/HSU/models", epoch=epoch)
+            utils.save_model(self.model, self.optimizer, directory=directory, name="TWOS", epoch=epoch)
             
         return e_hat, a_hat, train_losses
           
@@ -412,10 +422,10 @@ class EGU_Net(SelfSupervisedTrainer):
 
             # Save permanent model
             if epoch%10 == 0 and epoch > 0:
-                utils.save_model(self.model, self.optimizer, directory="/home/ids/edabier/HSU/models", epoch=epoch, is_permanent=True)
+                utils.save_model(self.model, self.optimizer, directory=directory, name="EGU", epoch=epoch, is_permanent=True)
             
             # Save checkpoint
-            utils.save_model(self.model, self.optimizer, directory="/home/ids/edabier/HSU/models", epoch=epoch)
+            utils.save_model(self.model, self.optimizer, directory=directory, name="EGU", epoch=epoch)
             
         return e_hat, a_hat, train_losses
     
@@ -585,10 +595,10 @@ class GeneratedDataset(SelfSupervisedTrainer):
 
             # Save permanent model
             if epoch%10 == 0 and epoch > 0:
-                utils.save_model(self.model, self.optimizer, directory="/home/ids/edabier/HSU/models", epoch=epoch, is_permanent=True)
+                utils.save_model(self.model, self.optimizer, directory=directory, name="Generate", epoch=epoch, is_permanent=True)
             
             # Save checkpoint
-            utils.save_model(self.model, self.optimizer, directory="/home/ids/edabier/HSU/models", epoch=epoch)
+            utils.save_model(self.model, self.optimizer, directory=directory, name="Generate", epoch=epoch)
             
         return e_hat, a_hat, train_losses
 

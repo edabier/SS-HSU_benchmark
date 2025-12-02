@@ -257,7 +257,7 @@ def create_dataloader(dataset, dev, train_split=None, patch_size=None, batch_siz
         train_loader = DataLoader(dataset, batch_size)
         return train_loader, dataset.B, dataset.col
             
-def save_model(model, optimizer, directory, epoch, is_permanent=False):
+def save_model(model, optimizer, directory, name, epoch, is_permanent=False):
     """
     Overwrite the previous checkpoint save if not is_permanent, otherwise, saves a new version of the model
     """
@@ -267,16 +267,16 @@ def save_model(model, optimizer, directory, epoch, is_permanent=False):
             'epoch': epoch,
             'model_state_dict': model.state_dict(),
             'optimizer_state_dict': optimizer.state_dict()
-        }, os.path.join(directory, f'{model.__class__.__name__}_lr_{optimizer.param_groups[-1]['lr']}_epoch_{epoch}.pt'))
-        print(f"Saved permanent model {model.__class__.__name__}_lr_{optimizer.param_groups[-1]['lr']}_epoch_{epoch}.pt")
+        }, os.path.join(directory, f'{model.__class__.__name__}_{name}_lr_{optimizer.param_groups[-1]["lr"]}_epoch_{epoch}.pt'))
+        print(f'Saved permanent model {model.__class__.__name__}_{name}_lr_{optimizer.param_groups[-1]["lr"]}_epoch_{epoch}.pt')
     else:
         # Overwrite the temporary model save
         torch.save({
             'epoch': epoch,
             'model_state_dict': model.state_dict(),
             'optimizer_state_dict': optimizer.state_dict(),
-        }, os.path.join(directory, f'{model.__class__.__name__}_lr_{optimizer.param_groups[-1]['lr']}_checkpoint.pt'))
-        print("Saved checkpoint model")
+        }, os.path.join(directory, f'{model.__class__.__name__}_{name}_lr_{optimizer.param_groups[-1]["lr"]}_checkpoint.pt'))
+        # print("Saved checkpoint model")
         
 def load_checkpoint(path, model, optimizer):
     """
