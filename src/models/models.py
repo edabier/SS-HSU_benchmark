@@ -408,8 +408,8 @@ class NALMU(nn.Module, HSUModel):
     def forward(self, X, E_init=None, A_init=None, epoch=-1):
         # Remarque : les tailles de E sont fixees des l'initialisation du reseau et celle de A l'est Mais on peut se servir de E_init et A_init pour initialiser le reseau, par exemple avec un VCA.
         
-        if x.dim() < 3:
-            x = x.unsqueeze(0) # Add a batch dimension for inference
+        if X.dim() < 3:
+            X = X.unsqueeze(0) # Add a batch dimension for inference
         
         b_size = X.shape[0]
         
@@ -492,8 +492,8 @@ class RALMU(nn.Module, HSUModel):
         E_pred_tab = []
         A_pred_tab = []
         
-        if x.dim() < 3:
-            x = x.unsqueeze(0) # Add a batch dimension for inference
+        if X.dim() < 3:
+            X = X.unsqueeze(0) # Add a batch dimension for inference
             
         b_size = X.shape[0]
         

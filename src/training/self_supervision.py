@@ -3,6 +3,8 @@ import torch.nn as nn
 import random
 from sklearn.metrics.pairwise import cosine_similarity
 import numpy as np
+import wandb
+
 import src.training.data_augmentation as data_aug
 import src.utils.extractor as extractor
 import src.utils.utils as utils
@@ -21,16 +23,19 @@ class ReconstructionError(SelfSupervisedTrainer):
     Args:
         model: the model to train
         pixelwise (bool, optional): whether to apply the model pixel-wise or entire patches (default: False)
+        load_checkpoint( str, optional): the path of the training checkpoint to be loaded (default: None)
         criterion: the function to optimize by training the model, by default the MSE loss (default: None)
         optimizer: the optimizer to use for the training, by default, we use AdamW (default: None)
+        wandb (bool, optional): whether to sync the training with wandb or not (default: True)
     """
-    def __init__(self, model, pixelwise=False, criterion=None, optimizer=None, epochs=200, lr=0.001, batch_size=1):
+    def __init__(self, model, pixelwise=False, load_checkpoint=None, criterion=None, optimizer=None, epochs=200, lr=0.001, wandb=False):
         super().__init__()
         self.model = model
         self.pixelwise = pixelwise
+        self.load_checkpoint = load_checkpoint
         self.epochs = epochs
         self.lr = lr
-        self.batch_size = batch_size 
+        self.wandb = wandb
         
         if optimizer is not None:
             self.optimizer = optimizer
@@ -43,8 +48,23 @@ class ReconstructionError(SelfSupervisedTrainer):
             self.criterion = nn.MSELoss()
     
     def train(self, dataloader):
+        if self.wandb:
+            run = wandb.init(
+                project=f"{self.model.__class__.__name__}_train",
+                config={
+                    "learning_rate": self.optimizer.param_groups[-1]['lr'],
+                    "batch_size": dataloader.batch_size,
+                    "epochs": self.epochs,
+                },
+            )
+            
+        if self.load_checkpoint is not None: 
+            start_epoch = utils.load_checkpoint(self.load_checkpoint, self.model, self.optimizer)
+        else:
+            start_epoch = 0
+            
         train_losses = []
-        for _ in range(self.epochs):
+        for epoch in range(start_epoch, self.epochs):
             
             train_loss = 0
             
@@ -66,6 +86,16 @@ class ReconstructionError(SelfSupervisedTrainer):
             train_loss /= len(dataloader)
             train_losses.append(train_loss)
             
+            if self.wandb:
+                wandb.log({"training loss": train_loss})
+
+            # Save permanent model
+            if epoch%10 == 0 and epoch > 0:
+                utils.save_model(self.model, self.optimizer, directory="/home/ids/edabier/HSU/models", epoch=epoch, is_permanent=True)
+            
+            # Save checkpoint
+            utils.save_model(self.model, self.optimizer, directory="/home/ids/edabier/HSU/models", epoch=epoch)
+                
         return e_hat, a_hat, train_losses
       
 class DIP(SelfSupervisedTrainer):
@@ -77,15 +107,18 @@ class DIP(SelfSupervisedTrainer):
 
     Args:
         model: the model to train
+        load_checkpoint( str, optional): the path of the training checkpoint to be loaded (default: None)
         criterion: the function to optimize by training the model, by default the MSE loss (default: None)
         optimizer: the optimizer to use for the training, by default, we use AdamW (default: None)
+        wandb (bool, optional): whether to sync the training with wandb or not (default: True)
     """
-    def __init__(self, model, criterion=None, optimizer=None, epochs=200, lr=0.001, batch_size=1):
+    def __init__(self, model, load_checkpoint=None, criterion=None, optimizer=None, epochs=200, lr=0.001, wandb=False):
         super().__init__()
         self.model = model
+        self.load_checkpoint = load_checkpoint
         self.epochs = epochs
         self.lr = lr
-        self.batch_size = batch_size 
+        self.wandb = wandb
         
         if optimizer is not None:
             self.optimizer = optimizer
@@ -98,8 +131,23 @@ class DIP(SelfSupervisedTrainer):
             self.criterion = nn.MSELoss()
     
     def train(self, dataloader):
+        if self.wandb:
+            run = wandb.init(
+                project=f"{self.model.__class__.__name__}_train",
+                config={
+                    "learning_rate": self.optimizer.param_groups[-1]['lr'],
+                    "batch_size": dataloader.batch_size,
+                    "epochs": self.epochs,
+                },
+            )
+            
+        if self.load_checkpoint is not None: 
+            start_epoch = utils.load_checkpoint(self.load_checkpoint, self.model, self.optimizer)
+        else:
+            start_epoch = 0
+            
         train_losses = []
-        for _ in range(self.epochs):
+        for epoch_ in range(start_epoch, self.epochs):
             
             train_loss = 0
             
@@ -118,6 +166,15 @@ class DIP(SelfSupervisedTrainer):
         
             train_loss /= len(dataloader)
             train_losses.append(train_loss)
+            if self.wandb:
+                wandb.log({"training loss": train_loss})
+
+            # Save permanent model
+            if epoch%10 == 0 and epoch > 0:
+                utils.save_model(self.model, self.optimizer, directory="/home/ids/edabier/HSU/models", epoch=epoch, is_permanent=True)
+            
+            # Save checkpoint
+            utils.save_model(self.model, self.optimizer, directory="/home/ids/edabier/HSU/models", epoch=epoch)
             
         return e_hat, a_hat, train_losses
     
@@ -134,15 +191,18 @@ class TwoStagesNet(SelfSupervisedTrainer):
     Args:
         model: the model to train
         B (int): the number of spectral bands of the input image
+        load_checkpoint( str, optional): the path of the training checkpoint to be loaded (default: None)
         criterion: the function to optimize by training the model, by default, we use the loss defined in the article (default: None)
         optimizer: the optimizer to use for the training, by default, we use AdamW (default: None)
+        wandb (bool, optional): whether to sync the training with wandb or not (default: True)
     """
-    def __init__(self, model, B, criterion=None, optimizer=None, epochs=200, lr=0.001, batch_size=1):
+    def __init__(self, model, B, load_checkpoint=None, criterion=None, optimizer=None, epochs=200, lr=0.001, wandb=False):
         super().__init__()
         self.model = model
+        self.load_checkpoint = load_checkpoint
         self.epochs = epochs
         self.lr = lr
-        self.batch_size = batch_size 
+        self.wandb = wandb
         
         if optimizer is not None:
             self.optimizer = optimizer
@@ -175,8 +235,23 @@ class TwoStagesNet(SelfSupervisedTrainer):
         return loss_forward + loss_denoiser + loss_sad
     
     def train(self, dataloader):
+        if self.wandb:
+            run = wandb.init(
+                project=f"{self.model.__class__.__name__}_train",
+                config={
+                    "learning_rate": self.optimizer.param_groups[-1]['lr'],
+                    "batch_size": dataloader.batch_size,
+                    "epochs": self.epochs,
+                },
+            )
+            
+        if self.load_checkpoint is not None: 
+            start_epoch = utils.load_checkpoint(self.load_checkpoint, self.model, self.optimizer)
+        else:
+            start_epoch = 0
+            
         train_losses = []
-        for _ in range(self.epochs):
+        for epoch in range(start_epoch, self.epochs):
             
             train_loss = 0
             
@@ -197,6 +272,15 @@ class TwoStagesNet(SelfSupervisedTrainer):
         
             train_loss /= len(dataloader)
             train_losses.append(train_loss)
+            if self.wandb:
+                wandb.log({"training loss": train_loss})
+
+            # Save permanent model
+            if epoch%10 == 0 and epoch > 0:
+                utils.save_model(self.model, self.optimizer, directory="/home/ids/edabier/HSU/models", epoch=epoch, is_permanent=True)
+            
+            # Save checkpoint
+            utils.save_model(self.model, self.optimizer, directory="/home/ids/edabier/HSU/models", epoch=epoch)
             
         return e_hat, a_hat, train_losses
           
@@ -207,15 +291,18 @@ class EGU_Net(SelfSupervisedTrainer):
     Args:
         model: the model to train
         c (int): the number of endmembers to extract from the input HSI
+        load_checkpoint( str, optional): the path of the training checkpoint to be loaded (default: None)
         optimizer: the optimizer to use for the training, by default, we use AdamW (default: None)
+        wandb (bool, optional): whether to sync the training with wandb or not (default: True)
     """
-    def __init__(self, model, c, optimizer=None, epochs=200, lr=0.001, batch_size=1):
+    def __init__(self, model, c, load_checkpoint=None, optimizer=None, epochs=200, lr=0.001, wandb=False):
         super().__init__()
         self.model = model
         self.c = c
+        self.load_checkpoint = load_checkpoint
         self.epochs = epochs
         self.lr = lr
-        self.batch_size = batch_size 
+        self.wandb = wandb
         
         if optimizer is not None:
             self.optimizer = optimizer
@@ -272,12 +359,26 @@ class EGU_Net(SelfSupervisedTrainer):
         return pure_abds, e_avg
         
     def train(self, dataloader):
+        if self.wandb:
+            run = wandb.init(
+                project=f"{self.model.__class__.__name__}_train",
+                config={
+                    "learning_rate": self.optimizer.param_groups[-1]['lr'],
+                    "batch_size": dataloader.batch_size,
+                    "epochs": self.epochs,
+                },
+            )
+            
+        if self.load_checkpoint is not None: 
+            start_epoch = utils.load_checkpoint(self.load_checkpoint, self.model, self.optimizer)
+        else:
+            start_epoch = 0
         
         train_losses = []
         ce = nn.CrossEntropyLoss()
         mse = nn.MSELoss()
         
-        for epoch in range(self.epochs):
+        for epoch in range(start_epoch, self.epochs):
             
             train_loss = 0
         
@@ -306,6 +407,15 @@ class EGU_Net(SelfSupervisedTrainer):
         
             train_loss /= len(dataloader)
             train_losses.append(train_loss)
+            if self.wandb:
+                wandb.log({"training loss": train_loss})
+
+            # Save permanent model
+            if epoch%10 == 0 and epoch > 0:
+                utils.save_model(self.model, self.optimizer, directory="/home/ids/edabier/HSU/models", epoch=epoch, is_permanent=True)
+            
+            # Save checkpoint
+            utils.save_model(self.model, self.optimizer, directory="/home/ids/edabier/HSU/models", epoch=epoch)
             
         return e_hat, a_hat, train_losses
     
@@ -316,17 +426,21 @@ class GeneratedDataset(SelfSupervisedTrainer):
     Args:
         model: the model to be trained
         dataset_size (int, optional): the number of tuple (Yi, Ei, Ai) to generate (default: 10000)
+        load_checkpoint( str, optional): the path of the training checkpoint to be loaded (default: None)
         criterion: the function to optimize by training the model, by default, we use the loss defined in the article (default: None)
         optimizer: the optimizer to use for the training, by default, we use AdamW (default: None)
+        wandb (bool, optional): whether to sync the training with wandb or not (default: True)
     """
     
-    def __init__(self, model, dataset_size=10000, criterion=None, optimizer=None, epochs=200, lr=0.001, batch_size=1):
+    def __init__(self, model, dataset_size=10000, load_checkpoint=None, criterion=None, optimizer=None, epochs=200, lr=0.001, batch_size=1, wandb=False):
         super().__init__()
         self.model = model
         self.dataset_size = dataset_size
+        self.load_checkpoint = load_checkpoint
         self.epochs = epochs
         self.lr = lr
-        self.batch_size = batch_size 
+        self.batch_size = batch_size
+        self.wandb = wandb
         
         if optimizer is not None:
             self.optimizer = optimizer
@@ -424,12 +538,26 @@ class GeneratedDataset(SelfSupervisedTrainer):
         return loss_e + loss_a
     
     def train(self):
+        if self.wandb:
+            run = wandb.init(
+                project=f"{self.model.__class__.__name__}_train",
+                config={
+                    "learning_rate": self.optimizer.param_groups[-1]['lr'],
+                    "batch_size": self.batch_size,
+                    "epochs": self.epochs,
+                },
+            )
+            
+        if self.load_checkpoint is not None: 
+            start_epoch = utils.load_checkpoint(self.load_checkpoint, self.model, self.optimizer)
+        else:
+            start_epoch = 0
         
         # Make sure the synthetic training dataset has been created first
         assert hasattr(self, "dataset"), "The training dataset must be generated first by running self.create_datatset()"
         
         train_losses = []
-        for _ in range(self.epochs):
+        for epoch in range(start_epoch, self.epochs):
             
             train_loss = 0
             
@@ -452,6 +580,15 @@ class GeneratedDataset(SelfSupervisedTrainer):
                 
             train_loss /= self.dataset_size
             train_losses.append(train_loss)
+            if self.wandb:
+                wandb.log({"training loss": train_loss})
+
+            # Save permanent model
+            if epoch%10 == 0 and epoch > 0:
+                utils.save_model(self.model, self.optimizer, directory="/home/ids/edabier/HSU/models", epoch=epoch, is_permanent=True)
+            
+            # Save checkpoint
+            utils.save_model(self.model, self.optimizer, directory="/home/ids/edabier/HSU/models", epoch=epoch)
             
         return e_hat, a_hat, train_losses
 

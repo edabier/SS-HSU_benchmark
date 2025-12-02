@@ -6,6 +6,7 @@ import torch.nn.functional as F
 import numpy as np
 import math
 import scipy.io as io
+import os
 
 class SADLoss(nn.Module):
     """
@@ -109,6 +110,8 @@ class toutesLoss(nn.Module):
     
 class HSI_dataset(Dataset):    
     def __init__(self, dataset, patch_size=None, dtype=None):
+        
+        self.dataset_name = dataset
         
         if dtype is None:
             dtype = torch.float32
@@ -239,31 +242,97 @@ def create_dataloader(dataset, dev, train_split=None, patch_size=None, batch_siz
         patch_size (int): whether or not to patch the input HSI
     """
     if patch_size is None:
-        
         dataset = HSI_dataset(dataset, dtype=dtype)
-        train_loader = DataLoader(dataset, batch_size)
-        return train_loader
-    
     else:
         dataset = HSI_dataset(dataset, patch_size, dtype=dtype)
         
+    if train_split is not None:
         generator = torch.Generator(dev)
         train_set, test_set = random_split(dataset, lengths=[train_split, 1-train_split], generator=generator)
-    
+
         train_loader = DataLoader(train_set, batch_size)
         test_loader = DataLoader(test_set, batch_size)
+        return train_loader, test_loader, dataset.B, dataset.col
+    else:
+        train_loader = DataLoader(dataset, batch_size)
+        return train_loader, dataset.B, dataset.col
+            
+def save_model(model, optimizer, directory, epoch, is_permanent=False):
+    """
+    Overwrite the previous checkpoint save if not is_permanent, otherwise, saves a new version of the model
+    """
+    if is_permanent:
+        # Save a permanent copy of the model
+        torch.save({
+            'epoch': epoch,
+            'model_state_dict': model.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict()
+        }, os.path.join(directory, f'{model.__class__.__name__}_lr_{optimizer.param_groups[-1]['lr']}_epoch_{epoch}.pt'))
+        print(f"Saved permanent model {model.__class__.__name__}_lr_{optimizer.param_groups[-1]['lr']}_epoch_{epoch}.pt")
+    else:
+        # Overwrite the temporary model save
+        torch.save({
+            'epoch': epoch,
+            'model_state_dict': model.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+        }, os.path.join(directory, f'{model.__class__.__name__}_lr_{optimizer.param_groups[-1]['lr']}_checkpoint.pt'))
+        print("Saved checkpoint model")
         
-        return train_loader, test_loader
-    
+def load_checkpoint(path, model, optimizer):
+    """
+    Loads the last training checkpoint of the model
+    """
+    if os.path.isfile(path):
+        checkpoint = torch.load(path)
+        model.load_state_dict(checkpoint['model_state_dict'])
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        start_epoch = checkpoint['epoch'] + 1  # Start from the next epoch
+        print(f"Resuming training from epoch {start_epoch}")
+    else:
+        start_epoch = 0
+        print("No checkpoint found. Starting training from scratch.")
+    return start_epoch
+            
 def compute_metrics(E, A, E_hat, A_hat, rmse=False):
     
     if rmse:
-        re = torch.mean(torch.sqrt(torch.mean((A - A_hat) ** 2, dim=0)))
+        re = torch.mean(torch.sqrt(torch.mean((A - A_hat) ** 2, dim=2)))
     else:
-        re = torch.mean(torch.sum((A - A_hat) ** 2, dim=1))
+        re = torch.mean(torch.sum((A - A_hat) ** 2, dim=2))
         
     E_norm = E / torch.norm(E, dim=0, keepdim=True)
     E_hat_norm = E_hat / torch.norm(E_hat, dim=0, keepdim=True)
     sad = torch.mean(torch.acos(torch.clamp(torch.sum(E_norm * E_hat_norm, dim=0), -1.0, 1.0)))
     
     return re, sad
+
+def test_model(model, test_loader, wandb=False):
+    """
+    Tests the input model on the input test dataset
+    """
+    
+    if wandb:
+        run = wandb.init(
+            project=f"{model.__class__.__name__}_test",
+            config={
+                "dataset": test_loader # Check if the dataloader can access the dataset variables to get the name
+            },
+        )
+        
+    test_metrics = {"re": [], "sad": []}
+    for Y, E, A in test_loader:
+        
+        e_hat, a_hat, y_hat = model(Y)
+            
+        re, sad = compute_metrics(E, A, e_hat, a_hat)
+        test_metrics["re"].append(re)
+        test_metrics["sad"].append(sad)
+        
+        if wandb:
+            wandb.log({"re": re})
+            wandb.log({"sad": sad})
+    
+    mean_re = torch.mean(torch.tensor(test_metrics["re"]))
+    mean_sad = torch.mean(torch.tensor(test_metrics["sad"]))
+    
+    return mean_re, mean_sad
