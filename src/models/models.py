@@ -3,9 +3,11 @@ import numpy as np
 import torch.nn as nn
 import torch
 import torch.nn.functional as F
-import src.models.transformer as transformer
 from sklearn.feature_extraction.image import extract_patches_2d
 import tqdm
+
+import src.models.transformer as transformer
+import src.utils.extractor as extractor
 
 class HSUModel():
     def __init__(self):
@@ -32,11 +34,28 @@ class weightConstraint(object):
             w = torch.clamp_min(w, 0)
             module.weight.data = w
 
+def init_decoder_weights(model, Y, c, kernel=None):
+    """
+    Initializes the model's decoder weights with VCA extracted endmembers
+    input Y must be of shape (B, N) or (B, H, W) -> no batch
+    """
+    init_em = extractor.VCA(Y, c)
+    
+    model_dict = model.state_dict()
+    
+    if kernel is not None:
+        model_dict['decoder.weight'][:, :, kernel//2, kernel//2] = init_em
+    else:
+        model_dict["decoder.0.weight"][:,:,0,0] = init_em
+        
+    model.load_state_dict(model_dict)
+    return model
+
 """
 Autoencoders
 """
 
-class MLAP_AE(nn.Module, HSUModel):
+class MLP_AE(nn.Module, HSUModel):
     """
     Adaptation of the MLP Auto encoder from Hong et al. 2021
     
@@ -45,7 +64,7 @@ class MLAP_AE(nn.Module, HSUModel):
         c (int): the number of endmembers
     """
     def __init__(self, B, c, seed=None):
-        super(MLAP_AE, self).__init__()
+        super(MLP_AE, self).__init__()
         self.B = B
         self.c = c
         
@@ -105,13 +124,14 @@ class MLAP_AE(nn.Module, HSUModel):
         self.decoder.apply(constraints)
         Ws = [m.weight for m in self.decoder if isinstance(m, nn.Linear)]
         e_est = torch.linalg.multi_dot(Ws[::-1])
+        # e_est = e_est / torch.norm(e_est)
         
         return e_est, abund, x_hat
 
 class CNNAE_linear(nn.Module, HSUModel):
     """
     Adaptation of the CNNAEU implementation from the HySUPP repo
-    Needs patching because the decoder is a linear mapping from (c x N) to (B x N) which can grow enormous
+    The decoder is taken from MLP_AE
     
     Args:
         B (int): the number of spectral bands
@@ -152,8 +172,21 @@ class CNNAE_linear(nn.Module, HSUModel):
             nn.BatchNorm2d(self.c),
             nn.Dropout2d(p=0.2),
         )
-
-        self.decoder = nn.Linear(in_features=self.patch_size**2*self.c, out_features=self.patch_size**2*self.B)
+        
+        self.decoder = nn.Sequential(
+            nn.Linear(self.c, 32),
+            nn.BatchNorm1d(32),
+            nn.Sigmoid(),
+            nn.Linear(32, 128),
+            nn.BatchNorm1d(128),
+            nn.Sigmoid(),
+            nn.Linear(128, 256),
+            nn.BatchNorm1d(256),
+            nn.Sigmoid(),
+            nn.Linear(256, self.B),
+            nn.BatchNorm1d(self.B),
+            nn.Sigmoid()        
+        )
 
     def forward(self, x):
         
@@ -166,19 +199,22 @@ class CNNAE_linear(nn.Module, HSUModel):
         
         code = self.encoder(x)
         
-        abund = F.softmax(code * self.scale, dim=1)
-        a_hat = abund.reshape(batch, self.c, N)
-        abund = abund.reshape(batch, -1)
+        abund_flat = F.softmax(code * self.scale, dim=1)
+        abund_flat = abund_flat.reshape(batch*N, self.c)
+        a_hat = abund_flat.reshape(batch, N, self.c).permute(0, 2, 1)  # (batch, c, N)
         
-        x_hat = self.decoder(abund)
-        x_hat = x_hat.reshape(batch, B, N)
+        x_hat_flat = self.decoder(abund_flat)  # (batch*N, B)
+        x_hat = x_hat_flat.reshape(batch, N, B).permute(0, 2, 1)  # (batch, B, N)
+        # a_hat = abund.reshape(batch, self.c, N)
+        # abund = abund.reshape(batch, -1)
+        
+        # x_hat = self.decoder(abund)
+        # x_hat = x_hat.reshape(batch, B, N)
         
         constraints = weightConstraint()
         self.decoder.apply(constraints)
-        e_est = self.decoder.weight.data
-        
-        p = self.patch_size**2
-        e_hat = e_est.reshape(self.B, p, self.c, p)[..., 0, :, 0].unsqueeze(0).expand(batch, self.B, self.c)
+        Ws = [m.weight for m in self.decoder if isinstance(m, nn.Linear)]
+        e_hat = torch.linalg.multi_dot(Ws[::-1])
         
         return e_hat, a_hat, x_hat
 

@@ -36,7 +36,9 @@ def main(c, patch_size, model, training_strat, split, dataset, lr, epochs, batch
     
     train_loader, test_loader, B, col = utils.create_dataloader(dataset=dataset, dev=dev, train_split=split, patch_size=patch_size, batch_size=batch_size)
     
-    if model == "CNNAEU":
+    if model == "MLP_AE":
+        model = models.MLP_AE(B, c)
+    elif model == "CNNAEU":
         model = models.CNNAEU(B=B, c=c)
     elif model == "CNN_linear":
         model = models.CNNAE_linear(B=B, c=c, patch_size=patch_size)

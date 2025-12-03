@@ -8,6 +8,7 @@ import wandb
 import src.training.data_augmentation as data_aug
 import src.utils.extractor as extractor
 import src.utils.utils as utils
+import src.models.models as models
 
 # directory = "/home/ids/edabier/HSU/SS-HSU_benchmark/models"
 directory = "models/"
@@ -356,11 +357,11 @@ class EGU_Net(SelfSupervisedTrainer):
         sampled_ij = all_ij[sampled_indices]
         sub_images = torch.stack([y[:, i:i+sub_h, j:j+sub_w] for i, j in sampled_ij])
         
-        em_lib = torch.stack([extractor.VCA(sub_images[i], self.c) for i in range(n_sub)], dim=1) # shape (B, c * n_sub)
+        em_lib = torch.stack([extractor.batched_VCA(sub_images[i], self.c) for i in range(n_sub)], dim=1) # shape (B, c * n_sub)
         
         centers, memberships = data_aug.group_spectra_kmeans(em_lib.T, n_clusters=self.c)
         grouped_lib = data_aug.group_spectra_by_cluster(em_lib, memberships) # shape (c, B, nb_spectra_in_cluster)
-        e_avg = torch.stack([torch.mean(grouped_lib[i], dim=1, keepdim=True) for i in range(c)], dim=1).squeeze(2)
+        e_avg = torch.stack([torch.mean(grouped_lib[i], dim=1, keepdim=True) for i in range(self.c)], dim=1).squeeze(2)
         
         # Apply FCLS to randomly sampled ems in grouped_lib 
         E = torch.stack([grouped_lib[i][:,random.randint(0, grouped_lib[i].shape[1]-1)] for i in range(len(grouped_lib))])
@@ -493,7 +494,7 @@ class GeneratedDataset(SelfSupervisedTrainer):
 
         # We run n_vca times the VCA extraction to get n_vca*c endmembers
         for _ in range(n_vca):
-            e = extractor.VCA(y, c=c) # shape (B, c)
+            e = extractor.batched_VCA(y, c=c) # shape (B, c)
             endmember_lib = torch.cat((endmember_lib, e), dim=1)
 
         # We remove duplicate ems and normalize them
