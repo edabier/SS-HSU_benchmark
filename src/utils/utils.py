@@ -4,9 +4,19 @@ from torch.nn.functional import normalize
 from torch.utils.data import Dataset, DataLoader, random_split
 import torch.nn.functional as F
 import numpy as np
+import matplotlib.pyplot as plt
 import math
 import scipy.io as io
 import os
+
+def CNNAEU_loss(target, pred):
+    assert target.shape == pred.shape
+
+    dot_product = (target * pred).sum(dim=1)
+    target_norm = target.norm(dim=1)
+    pred_norm = pred.norm(dim=1)
+    sad_score = torch.clamp(dot_product / (target_norm * pred_norm), -1, 1).acos()
+    return sad_score.mean()
 
 class SADLoss(nn.Module):
     """
@@ -292,7 +302,126 @@ def load_checkpoint(path, model, optimizer):
         start_epoch = 0
         print("No checkpoint found. Starting training from scratch.")
     return start_epoch
-            
+
+def numpy_SAD(y_true, y_pred):
+    return np.arccos(np.dot(y_pred, y_true) / (np.linalg.norm(y_true) * np.linalg.norm(y_pred)))
+
+def order_endmembers(endmembers, endmembersGT):
+    num_endmembers = endmembers.shape[0]
+    dict = {}
+    SAD_ = []
+    sad_mat = np.ones((num_endmembers, num_endmembers))
+    for i in range(num_endmembers):
+        endmembers[i, :] = endmembers[i, :] / endmembers[i, :].max()
+        endmembersGT[i, :] = endmembersGT[i, :] / endmembersGT[i, :].max()
+    for i in range(num_endmembers):
+        for j in range(num_endmembers):
+            sad_mat[i, j] = numpy_SAD(endmembers[i, :], endmembersGT[j, :])
+    rows = 0
+    while rows < num_endmembers:
+        minimum = sad_mat.min()
+        index_arr = np.where(sad_mat == minimum)
+        if minimum == 100:
+            break
+        if len(index_arr) < 2:
+            break
+        index = (index_arr[0][0], index_arr[1][0])
+        dict[index[1]] = index[0]  # keep Gt at first,
+        SAD_.append(minimum)
+        # dict[index[0]] = index[1]
+        sad_mat[index[0], index[1]] = 100
+        rows += 1
+        sad_mat[index[0], :] = 100
+        sad_mat[:, index[1]] = 100
+    SAD_ = np.array(SAD_)
+    Average_SAM = np.sum(SAD_)/ len(SAD_)
+    return dict, SAD_, Average_SAM
+
+def alter_MSE(y_true, y_pred):
+    num_em = y_true.shape[0]
+    y_true = np.reshape(y_true , [num_em, -1])
+    y_pred = np.reshape(y_pred , [num_em, -1])
+
+    R = y_pred - y_true
+    r = R*R
+    mse = np.mean(r, axis=1)
+    Average_mse = np.sum(mse) / len(mse)
+    mse = np.insert(mse, num_em, Average_mse, axis=0)
+    return mse
+
+def compute_metrics_and_plot(e_hat, e_gt, a_hat, a_gt):
+    """
+    Computes the SAD of predicted E and MSE of predicted A
+    """
+    
+    e_hat = e_hat.T
+    e_gt = e_gt.T
+
+    num_E = e_hat.shape[0]
+    n = num_E // 2
+    if num_E % 2 != 0: n = n + 1
+
+    dict, _, Average_SAM = order_endmembers(e_hat.cpu().numpy(), e_gt.cpu().numpy())
+    sad_ordered = []
+    endmember_ordered = []
+    abundance_ordered = []
+
+    fig = plt.figure(num=1, figsize=(8, 8))
+    plt.clf()
+    title = "aSAM score for all E: " + format(Average_SAM, '.3f') + " radians"
+    st = plt.suptitle(title)
+    for i in range(num_E):
+        e_hat[i, :] = e_hat[i, :] / e_hat[i, :].max()
+        e_gt[i, :] = e_gt[i, :] / e_gt[i, :].max()
+
+    for i in range(num_E):
+        endmember_ordered.append(e_hat[dict[i]].cpu())
+        abundance_ordered.append(a_hat[dict[i], :, :].detach().cpu())
+    endmember_ordered = np.array(endmember_ordered)
+    for i in range(num_E):
+        z = numpy_SAD(endmember_ordered[i], e_gt[i, :].cpu())
+        sad_ordered.append(z)
+
+    for i in range(num_E):
+        ax = plt.subplot(2, n, i + 1)
+        plt.plot(e_gt[i, :].cpu(), 'r', linewidth=1.0, label='GT')
+        plt.plot(endmember_ordered[i, :], 'k-', linewidth=1.0, label='predict')
+        plt.legend()
+        ax.set_title("SAD: " + str(i) + " :" + format(sad_ordered[i], '.4f'))
+        ax.get_xaxis().set_visible(False)
+        
+    sad_ordered.append(Average_SAM)
+    sad_ordered = np.array(sad_ordered)
+
+    abundance_ordered = np.array(abundance_ordered)
+
+    mse = alter_MSE(a_gt.cpu().numpy(), abundance_ordered)
+
+    plt.tight_layout()
+    st.set_y(0.95)
+    fig.subplots_adjust(top=0.88)
+    plt.draw()
+    plt.pause(0.001)
+
+    fig, axes = plt.subplots(a_hat.shape[0], 2, figsize=(5, 10))
+    axes[0, 0].set_title("Abundance pred", fontsize=12)
+    axes[0, 1].set_title("Abundance GT", fontsize=12)
+
+    # Plot tensor images
+    for i in range(a_hat.shape[0]):
+        axes[i, 0].imshow(a_hat[i].detach().cpu())
+        axes[i, 0].axis('off')
+
+        axes[i, 1].imshow(a_gt[i].detach().cpu())
+        axes[i, 1].axis('off')
+
+    # Adjust layout to reduce white space
+    plt.subplots_adjust(wspace=0.05, hspace=0.1)
+    plt.tight_layout()
+    plt.show()
+
+    return mse, sad_ordered
+
 def compute_metrics(E, A, E_hat, A_hat, rmse=False):
     
     if rmse:

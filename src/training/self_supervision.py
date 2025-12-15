@@ -10,8 +10,8 @@ import src.utils.extractor as extractor
 import src.utils.utils as utils
 import src.models.models as models
 
-# directory = "/home/ids/edabier/HSU/SS-HSU_benchmark/models"
-directory = "models/"
+directory = "/home/ids/edabier/HSU/SS-HSU_benchmark/models"
+# directory = "models/"
 
 class SelfSupervisedTrainer():
     def __init__(self):
@@ -80,7 +80,8 @@ class ReconstructionError(SelfSupervisedTrainer):
                 else:
                     e_hat, a_hat, y_hat = self.model(Y)
                     
-                loss = self.criterion(Y, y_hat)
+                # loss = self.criterion(Y, y_hat)
+                loss = utils.CNNAEU_loss(Y, y_hat)
                 train_loss += loss.item()
                 # train_losses.append(loss)
                 
