@@ -26,15 +26,17 @@ class ReconstructionError(SelfSupervisedTrainer):
 
     Args:
         model: the model to train
+        patch_size (int, optional): Used for transformers, the patch size of the input image (default: None)
         pixelwise (bool, optional): whether to apply the model pixel-wise or entire patches (default: False)
         load_checkpoint( str, optional): the path of the training checkpoint to be loaded (default: None)
         criterion: the function to optimize by training the model, by default the MSE loss (default: None)
         optimizer: the optimizer to use for the training, by default, we use AdamW (default: None)
         wandb (bool, optional): whether to sync the training with wandb or not (default: True)
     """
-    def __init__(self, model, pixelwise=False, load_checkpoint=None, criterion=None, optimizer=None, epochs=200, lr=0.001, wandb=False):
+    def __init__(self, model, patch_size=None, pixelwise=False, load_checkpoint=None, criterion=None, optimizer=None, scheduler=None, epochs=200, lr=0.001, wandb=False):
         super().__init__()
         self.model = model
+        self.patch_size = patch_size
         self.pixelwise = pixelwise
         self.load_checkpoint = load_checkpoint
         self.epochs = epochs
@@ -50,6 +52,10 @@ class ReconstructionError(SelfSupervisedTrainer):
             self.criterion = criterion
         else:
             self.criterion = nn.MSELoss()
+        
+        self.scheduler = None
+        if scheduler is not None:
+            self.scheduler = scheduler
     
     def train(self, dataloader):
         if self.wandb:
@@ -74,7 +80,10 @@ class ReconstructionError(SelfSupervisedTrainer):
             
             for Y, E, A in dataloader:
                 self.optimizer.zero_grad()
-                
+
+                if self.patch_size is not None:
+                    Y = Y[:, :, :(Y.shape[2]//self.patch_size**2)*self.patch_size**2]
+
                 if self.pixelwise: 
                     e_hat, a_hat, y_hat = map(lambda x: torch.stack(x, dim=2).reshape(*Y.shape[:2], 2), zip(*self.model(Y.reshape(Y.shape[0]*Y.shape[2], Y.shape[1]))))#zip(*[self.model(Y.transpose(1,2).reshape(-1, Y.shape[1])[:, :,i]) for i in range(Y.shape[2])]))
                 else:
@@ -87,19 +96,27 @@ class ReconstructionError(SelfSupervisedTrainer):
                 
                 loss.backward()
                 self.optimizer.step()
+            
+            if self.scheduler is not None:
+                self.scheduler.step()
         
             train_loss /= len(dataloader)
             train_losses.append(train_loss)
             
             if self.wandb:
                 wandb.log({"training loss": train_loss})
+            
+            try:
+                dataset_name = dataloader.dataset.dataset_name
+            except:
+                dataset_name = dataloader.dataset.dataset.dataset_name
 
-            # Save permanent model
-            if epoch%10 == 0 and epoch > 0:
-                utils.save_model(self.model, self.optimizer, directory=directory, name="RE", epoch=epoch, is_permanent=True)
+            # # Save permanent model
+            # if epoch%10 == 0 and epoch > 0:
+            #     utils.save_model(self.model, self.optimizer, directory=directory, name=f"RE_{dataloader.dataset.dataset_name}", epoch=epoch, is_permanent=True)
             
             # Save checkpoint
-            utils.save_model(self.model, self.optimizer, directory=directory, name="RE", epoch=epoch)
+            utils.save_model(self.model, self.optimizer, directory=directory, name=f"RE_{dataset_name}", epoch=epoch)
                 
         return e_hat, a_hat, train_losses
       
@@ -117,7 +134,7 @@ class DIP(SelfSupervisedTrainer):
         optimizer: the optimizer to use for the training, by default, we use AdamW (default: None)
         wandb (bool, optional): whether to sync the training with wandb or not (default: True)
     """
-    def __init__(self, model, load_checkpoint=None, criterion=None, optimizer=None, epochs=200, lr=0.001, wandb=False):
+    def __init__(self, model, load_checkpoint=None, criterion=None, optimizer=None, scheduler=None, epochs=200, lr=0.001, wandb=False):
         super().__init__()
         self.model = model
         self.load_checkpoint = load_checkpoint
@@ -134,6 +151,10 @@ class DIP(SelfSupervisedTrainer):
             self.criterion = criterion
         else:
             self.criterion = nn.MSELoss()
+        
+        self.scheduler = None
+        if scheduler is not None:
+            self.scheduler = scheduler
     
     def train(self, dataloader):
         if self.wandb:
@@ -168,18 +189,21 @@ class DIP(SelfSupervisedTrainer):
                 
                 loss.backward()
                 self.optimizer.step()
+            
+            if self.scheduler is not None:
+                self.scheduler.step()
         
             train_loss /= len(dataloader)
             train_losses.append(train_loss)
             if self.wandb:
                 wandb.log({"training loss": train_loss})
 
-            # Save permanent model
-            if epoch%10 == 0 and epoch > 0:
-                utils.save_model(self.model, self.optimizer, directory=directory, name="DIP", epoch=epoch, is_permanent=True)
+            # # Save permanent model
+            # if epoch%10 == 0 and epoch > 0:
+            #     utils.save_model(self.model, self.optimizer, directory=directory, name=f"DIP_{dataloader.dataset.dataset_name}", epoch=epoch, is_permanent=True)
             
             # Save checkpoint
-            utils.save_model(self.model, self.optimizer, directory=directory, name="DIP", epoch=epoch)
+            utils.save_model(self.model, self.optimizer, directory=directory, name=f"DIP_{dataloader.dataset.dataset_name}", epoch=epoch)
             
         return e_hat, a_hat, train_losses
     
@@ -201,7 +225,7 @@ class TwoStagesNet(SelfSupervisedTrainer):
         optimizer: the optimizer to use for the training, by default, we use AdamW (default: None)
         wandb (bool, optional): whether to sync the training with wandb or not (default: True)
     """
-    def __init__(self, model, B, load_checkpoint=None, criterion=None, optimizer=None, epochs=200, lr=0.001, wandb=False):
+    def __init__(self, model, B, load_checkpoint=None, criterion=None, optimizer=None, scheduler=None, epochs=200, lr=0.001, wandb=False):
         super().__init__()
         self.model = model
         self.load_checkpoint = load_checkpoint
@@ -216,6 +240,10 @@ class TwoStagesNet(SelfSupervisedTrainer):
             
         if criterion is not None:
             self.criterion = criterion
+        
+        self.scheduler = None
+        if scheduler is not None:
+            self.scheduler = scheduler
             
         self.denoiser = nn.Sequential(
             nn.Linear(B, 120), nn.ReLU(), nn.Dropout(p=0.3), 
@@ -281,18 +309,21 @@ class TwoStagesNet(SelfSupervisedTrainer):
                 
                 loss.backward()
                 self.optimizer.step()
+            
+            if self.scheduler is not None:
+                self.scheduler.step()
         
             train_loss /= len(dataloader)
             train_losses.append(train_loss)
             if self.wandb:
                 wandb.log({"training loss": train_loss})
 
-            # Save permanent model
-            if epoch%10 == 0 and epoch > 0:
-                utils.save_model(self.model, self.optimizer, directory=directory, name="TWOS", epoch=epoch, is_permanent=True)
+            # # Save permanent model
+            # if epoch%10 == 0 and epoch > 0:
+            #     utils.save_model(self.model, self.optimizer, directory=directory, name=f"TWOS_{dataloader.dataset.dataset_name}", epoch=epoch, is_permanent=True)
             
             # Save checkpoint
-            utils.save_model(self.model, self.optimizer, directory=directory, name="TWOS", epoch=epoch)
+            utils.save_model(self.model, self.optimizer, directory=directory, name=f"TWOS_{dataloader.dataset.dataset_name}", epoch=epoch)
             
         return e_hat, a_hat, train_losses
           
@@ -307,7 +338,7 @@ class EGU_Net(SelfSupervisedTrainer):
         optimizer: the optimizer to use for the training, by default, we use AdamW (default: None)
         wandb (bool, optional): whether to sync the training with wandb or not (default: True)
     """
-    def __init__(self, model, c, load_checkpoint=None, optimizer=None, epochs=200, lr=0.001, wandb=False):
+    def __init__(self, model, c, load_checkpoint=None, optimizer=None, scheduler=None, epochs=200, lr=0.001, wandb=False):
         super().__init__()
         self.model = model
         self.c = c
@@ -320,6 +351,14 @@ class EGU_Net(SelfSupervisedTrainer):
             self.optimizer = optimizer
         else:
             self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=self.lr)
+        
+        self.scheduler = None
+        if scheduler is not None:
+            self.scheduler = scheduler
+        
+        self.scheduler = None
+        if scheduler is not None:
+            self.scheduler = scheduler
         
     def extract_endmember_bundle(self, y, sub_size=0.1, n_sub=20, replacement=False):
         """
@@ -416,18 +455,21 @@ class EGU_Net(SelfSupervisedTrainer):
                     
                 loss.backward()
                 self.optimizer.step()
+            
+            if self.scheduler is not None:
+                self.scheduler.step()
         
             train_loss /= len(dataloader)
             train_losses.append(train_loss)
             if self.wandb:
                 wandb.log({"training loss": train_loss})
 
-            # Save permanent model
-            if epoch%10 == 0 and epoch > 0:
-                utils.save_model(self.model, self.optimizer, directory=directory, name="EGU", epoch=epoch, is_permanent=True)
+            # # Save permanent model
+            # if epoch%10 == 0 and epoch > 0:
+            #     utils.save_model(self.model, self.optimizer, directory=directory, name=f"EGU_{dataloader.dataset.dataset_name}", epoch=epoch, is_permanent=True)
             
             # Save checkpoint
-            utils.save_model(self.model, self.optimizer, directory=directory, name="EGU", epoch=epoch)
+            utils.save_model(self.model, self.optimizer, directory=directory, name=f"EGU_{dataloader.dataset.dataset_name}", epoch=epoch)
             
         return e_hat, a_hat, train_losses
     
@@ -444,7 +486,7 @@ class GeneratedDataset(SelfSupervisedTrainer):
         wandb (bool, optional): whether to sync the training with wandb or not (default: True)
     """
     
-    def __init__(self, model, dataset_size=10000, load_checkpoint=None, criterion=None, optimizer=None, epochs=200, lr=0.001, batch_size=1, wandb=False):
+    def __init__(self, model, dataset_size=10000, load_checkpoint=None, criterion=None, optimizer=None, scheduler=None, epochs=200, lr=0.001, batch_size=1, wandb=False):
         super().__init__()
         self.model = model
         self.dataset_size = dataset_size
@@ -461,6 +503,10 @@ class GeneratedDataset(SelfSupervisedTrainer):
             
         if criterion is not None:
             self.criterion = criterion
+        
+        self.scheduler = None
+        if scheduler is not None:
+            self.scheduler = scheduler
     
     def generate_dataset(self, y, c=4, n_vca=10, n_aug=10, c_var=0.4):
         """
@@ -589,15 +635,18 @@ class GeneratedDataset(SelfSupervisedTrainer):
                 
                 loss.backward()
                 self.optimizer.step()
+            
+            if self.scheduler is not None:
+                self.scheduler.step()
                 
             train_loss /= self.dataset_size
             train_losses.append(train_loss)
             if self.wandb:
                 wandb.log({"training loss": train_loss})
 
-            # Save permanent model
-            if epoch%10 == 0 and epoch > 0:
-                utils.save_model(self.model, self.optimizer, directory=directory, name="Generate", epoch=epoch, is_permanent=True)
+            # # Save permanent model
+            # if epoch%10 == 0 and epoch > 0:
+            #     utils.save_model(self.model, self.optimizer, directory=directory, name="Generate", epoch=epoch, is_permanent=True)
             
             # Save checkpoint
             utils.save_model(self.model, self.optimizer, directory=directory, name="Generate", epoch=epoch)

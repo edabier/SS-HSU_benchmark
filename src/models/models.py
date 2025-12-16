@@ -74,7 +74,7 @@ class MLP_AE(nn.Module, HSUModel):
         self.encoder = nn.Sequential(
             nn.Linear(B, 256),
             nn.BatchNorm1d(256),
-            nn.Dropout(),
+            nn.Dropout(p=0.9),
             nn.Tanh(),
             nn.Linear(256, 128),
             nn.BatchNorm1d(128),

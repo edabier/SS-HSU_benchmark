@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 from torch.nn.functional import normalize
+from torch.optim.lr_scheduler import _LRScheduler
 from torch.utils.data import Dataset, DataLoader, random_split
 import torch.nn.functional as F
 import numpy as np
@@ -34,6 +35,21 @@ class SADLoss(nn.Module):
         
         return -torch.sum(diagBatch)/(targets.size()[0]*targets.size()[2]) # Independant de la taille des mini-batchs et du nombre de sources
  
+def numpy_SAD(y_true, y_pred):
+    return np.arccos(np.dot(y_pred, y_true) / (np.linalg.norm(y_true) * np.linalg.norm(y_pred)))
+
+def alter_MSE(y_true, y_pred):
+    num_em = y_true.shape[0]
+    y_true = np.reshape(y_true , [num_em, -1])
+    y_pred = np.reshape(y_pred , [num_em, -1])
+
+    R = y_pred - y_true
+    r = R*R
+    mse = np.mean(r, axis=1)
+    Average_mse = np.sum(mse) / len(mse)
+    mse = np.insert(mse, num_em, Average_mse, axis=0)
+    return mse
+
 class toutesLoss(nn.Module):
     # For abundance matrices. To use it on EM, transpose the two inputs. (Doesn't correct permutations)
     """
@@ -118,6 +134,31 @@ class toutesLoss(nn.Module):
             
         return train_loss,train_E,train_A
     
+class PolyLR(_LRScheduler):
+    def __init__(self, optimizer, max_iter, power=0.99, last_epoch=-1):
+        
+        self.max_iter = max_iter
+        self.power = power
+        super(PolyLR, self).__init__(optimizer, last_epoch)
+
+    def get_lr(self):
+        return [
+            base_lr * (1 - self.last_epoch / self.max_iter) ** self.power
+            for base_lr in self.base_lrs
+        ]
+    
+class ReduceLREveryNEpochs(_LRScheduler):
+    def __init__(self, optimizer, reduce_every=15, reduce_by=0.2, last_epoch=-1):
+        self.reduce_every = reduce_every
+        self.reduce_by = reduce_by
+        super(ReduceLREveryNEpochs, self).__init__(optimizer, last_epoch)
+
+    def get_lr(self):
+        if self.last_epoch > 0 and self.last_epoch % self.reduce_every == 0:
+            return [lr * (1 - self.reduce_by) for lr in self.base_lrs]
+        else:
+            return self.base_lrs
+
 class HSI_dataset(Dataset):    
     def __init__(self, dataset, patch_size=None, dtype=None):
         
@@ -285,7 +326,7 @@ def save_model(model, optimizer, directory, name, epoch, is_permanent=False):
             'epoch': epoch,
             'model_state_dict': model.state_dict(),
             'optimizer_state_dict': optimizer.state_dict(),
-        }, os.path.join(directory, f'{model.__class__.__name__}_{name}_lr_{optimizer.param_groups[-1]["lr"]}_checkpoint.pt'))
+        }, os.path.join(directory, f'{model.__class__.__name__}_{name}_lr_{optimizer.param_groups[-1]["lr"]}.pt'))
         # print("Saved checkpoint model")
         
 def load_checkpoint(path, model, optimizer):
@@ -302,9 +343,6 @@ def load_checkpoint(path, model, optimizer):
         start_epoch = 0
         print("No checkpoint found. Starting training from scratch.")
     return start_epoch
-
-def numpy_SAD(y_true, y_pred):
-    return np.arccos(np.dot(y_pred, y_true) / (np.linalg.norm(y_true) * np.linalg.norm(y_pred)))
 
 def order_endmembers(endmembers, endmembersGT):
     num_endmembers = endmembers.shape[0]
@@ -337,19 +375,7 @@ def order_endmembers(endmembers, endmembersGT):
     Average_SAM = np.sum(SAD_)/ len(SAD_)
     return dict, SAD_, Average_SAM
 
-def alter_MSE(y_true, y_pred):
-    num_em = y_true.shape[0]
-    y_true = np.reshape(y_true , [num_em, -1])
-    y_pred = np.reshape(y_pred , [num_em, -1])
-
-    R = y_pred - y_true
-    r = R*R
-    mse = np.mean(r, axis=1)
-    Average_mse = np.sum(mse) / len(mse)
-    mse = np.insert(mse, num_em, Average_mse, axis=0)
-    return mse
-
-def compute_metrics_and_plot(e_hat, e_gt, a_hat, a_gt):
+def compute_metrics_and_plot(e_hat, e_gt, a_hat, a_gt, dataset_name=None):
     """
     Computes the SAD of predicted E and MSE of predicted A
     """
@@ -368,7 +394,7 @@ def compute_metrics_and_plot(e_hat, e_gt, a_hat, a_gt):
 
     fig = plt.figure(num=1, figsize=(8, 8))
     plt.clf()
-    title = "aSAM score for all E: " + format(Average_SAM, '.3f') + " radians"
+    title = f"{dataset_name} aSAM score for all E: " + format(Average_SAM, '.3f') + " radians"
     st = plt.suptitle(title)
     for i in range(num_E):
         e_hat[i, :] = e_hat[i, :] / e_hat[i, :].max()
@@ -387,7 +413,7 @@ def compute_metrics_and_plot(e_hat, e_gt, a_hat, a_gt):
         plt.plot(e_gt[i, :].cpu(), 'r', linewidth=1.0, label='GT')
         plt.plot(endmember_ordered[i, :], 'k-', linewidth=1.0, label='predict')
         plt.legend()
-        ax.set_title("SAD: " + str(i) + " :" + format(sad_ordered[i], '.4f'))
+        ax.set_title("SAD: " + format(sad_ordered[i], '.4f'))
         ax.get_xaxis().set_visible(False)
         
     sad_ordered.append(Average_SAM)
