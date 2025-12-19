@@ -29,10 +29,7 @@ class weightConstraint(object):
         pass
     def __call__(self, module):
         if hasattr(module, 'weight'):
-           # print("Entered")
-            w = module.weight.data
-            w = torch.clamp_min(w, 0)
-            module.weight.data = w
+            module.weight.clamp_(min=0)
 
 def init_decoder_weights(model, Y, c, kernel=None):
     """
@@ -120,9 +117,7 @@ class MLP_AE(nn.Module, HSUModel):
         x_hat_flat = self.decoder(abund_flat)  # (batch*N, B)
         x_hat = x_hat_flat.reshape(batch, N, B).permute(0, 2, 1)  # (batch, B, N)
 
-        constraints = weightConstraint()
-        self.decoder.apply(constraints)
-        Ws = [m.weight for m in self.decoder if isinstance(m, nn.Linear)]
+        Ws = [m.weight.clone() for m in self.decoder if isinstance(m, nn.Linear)]
         e_est = torch.linalg.multi_dot(Ws[::-1])
         # e_est = e_est / torch.norm(e_est)
         
@@ -211,9 +206,7 @@ class CNNAE_linear(nn.Module, HSUModel):
         # x_hat = self.decoder(abund)
         # x_hat = x_hat.reshape(batch, B, N)
         
-        constraints = weightConstraint()
-        self.decoder.apply(constraints)
-        Ws = [m.weight for m in self.decoder if isinstance(m, nn.Linear)]
+        Ws = [m.weight.clone() for m in self.decoder if isinstance(m, nn.Linear)]
         e_hat = torch.linalg.multi_dot(Ws[::-1])
         
         return e_hat, a_hat, x_hat
@@ -280,9 +273,7 @@ class CNNAEU(nn.Module, HSUModel):
         x_hat = self.decoder(abund)
         x_hat = x_hat.reshape(batch, B, N)
         
-        constraints = weightConstraint()
-        self.decoder.apply(constraints)
-        e_hat = self.decoder.weight.data.mean((2, 3))
+        e_hat = self.decoder.weight.detach().mean((2, 3))
         
         return e_hat, a_hat, x_hat
 
@@ -296,7 +287,7 @@ class Transformer_AE(nn.Module, HSUModel):
     """
     def __init__(self, B, c, im_size, patch_size=5, dim=24):
         super(Transformer_AE, self).__init__()
-        self.B, self.c, self.im_size, self.dim = B, c, im_size, dim
+        self.B, self.c, self.im_size, self.dim, self.patch_size = B, c, im_size, dim, patch_size
         self.encoder = nn.Sequential(
             nn.Conv2d(B, 128, kernel_size=(1, 1), stride=(1, 1), padding=(0, 0)),
             nn.BatchNorm2d(128, momentum=0.9),
@@ -335,11 +326,11 @@ class Transformer_AE(nn.Module, HSUModel):
         
         if x.dim() < 3:
             x = x.unsqueeze(0) # Add a batch dimension for inference
-            
+
         batch, patch, N = x.shape
         h = int(N**0.5)
         x = x.reshape(batch, patch, h, h)
-        
+
         abu_est = self.encoder(x)
         cls_emb = self.vtrans(abu_est)
         cls_emb = cls_emb.view(1, self.c, -1)
@@ -347,9 +338,7 @@ class Transformer_AE(nn.Module, HSUModel):
         abu_est = self.smooth(abu_est)
         re_result = self.decoder(abu_est)
         
-        constraints = weightConstraint()
-        self.decoder.apply(constraints)
-        e_est = self.decoder[0].weight.data[:,:,0,0]
+        e_est = self.decoder[0].weight.detach()[:,:,0,0]
         
         abu_est = abu_est.reshape(batch, abu_est.shape[1], N)
         re_result = re_result.reshape(batch, re_result.shape[1], N)
@@ -455,10 +444,9 @@ class NALMU(nn.Module, HSUModel):
         # A cause de la nonnegativite, on va utiliser exp(Aa) plutot que Aa => pour que exp(Aa) ne comprenne que des 1, il faut que Aa n'ait que des zeros
         self.Aa = torch.zeros((c,N)).to(torch.float32) # Aa doit etre le meme pour tous les minibatchs, on ne prend qu'un seul A pour l'initialisation (arbitrairement, le premier du mini-batch) et on fait un repeat dans les iterations du LMU
             
-        #Ae est de taille [m,n]
         if not self.shared:
-            self.Ae = self.Ae.repeat(self.T,1,1) # De taille [T,m,n]
-            self.Aa = self.Aa.repeat(self.T,1,1) # De taille [T,n,t].
+            self.Ae = self.Ae.repeat(self.T,1,1) # De taille [T,B,c]
+            self.Aa = self.Aa.repeat(self.T,1,1) # De taille [T,c,N].
             
         self.Ae = nn.Parameter(self.Ae,requires_grad = True)
         self.Aa = nn.Parameter(self.Aa,requires_grad = True)
@@ -475,20 +463,20 @@ class NALMU(nn.Module, HSUModel):
         A_pred_tab = []
         
         # Initialize E and A
-        E_pred = torch.ones(b_size, self.B, self.c)
-        A_pred = torch.ones(b_size, self.c, self.N)
-        # E_pred = E_init # See train_LMU_checkpoint_CK line 30 for init
-        # A_pred = A_init
+        # E_pred = torch.ones(b_size, self.B, self.c)
+        # A_pred = torch.ones(b_size, self.c, self.N)
+        E_pred = E_init.clone()
+        A_pred = A_init.clone()
 
         for t in range(self.T):
-            if hasattr(self, 'shared') and self.shared:
+            if self.shared:
                 A_pred = A_pred * torch.exp(self.Aa.repeat(b_size,1,1)) * torch.bmm(torch.transpose(E_pred,1,2),X)/(torch.bmm(torch.transpose(E_pred,1,2),torch.bmm(E_pred,A_pred)))
             else: # If parameters not shared
                 A_pred = A_pred * torch.exp(self.Aa[t].repeat(b_size,1,1)) * torch.bmm(torch.transpose(E_pred,1,2),X)/(torch.bmm(torch.transpose(E_pred,1,2),torch.bmm(E_pred,A_pred)))
             
             A_pred = A_pred.clip(min=1e-7,max=1)
             
-            if hasattr(self, 'shared') and self.shared:
+            if self.shared:
                 E_pred = E_pred*torch.exp(self.Ae.repeat(b_size,1,1)) * torch.bmm(X,torch.transpose(A_pred,1,2))/(torch.bmm(torch.bmm(E_pred,A_pred),torch.transpose(A_pred,1,2)))
             else:
                 E_pred = E_pred*torch.exp(self.Ae[t].repeat(b_size,1,1)) * torch.bmm(X,torch.transpose(A_pred,1,2))/(torch.bmm(torch.bmm(E_pred,A_pred),torch.transpose(A_pred,1,2)))
@@ -498,8 +486,8 @@ class NALMU(nn.Module, HSUModel):
             A_pred_tab.append(A_pred)
             E_pred_tab.append(E_pred)
             
-        E_est = E_pred
-        A_est = A_pred
+        E_est = E_pred_tab[-1]
+        A_est = A_pred_tab[-1]
         X_reconstruct = E_est @ A_est
 
         return E_est, A_est, X_reconstruct
@@ -529,7 +517,7 @@ class RALMU(nn.Module, HSUModel):
             tab_mlp_E = nn.ParameterList([MLP((B,c))])
         else:
             tab_mlp_E = nn.ParameterList([])
-            for ii in range(T):
+            for _ in range(T):
                 tab_mlp_E.append(MLP((B,c)))
         # On pourrait ici pre-entrainer les reseaux a predire un E appris par un premier reseau
         self.tab_mlp_E = tab_mlp_E
@@ -538,13 +526,13 @@ class RALMU(nn.Module, HSUModel):
             tab_mlp_A = nn.ParameterList([CNN2D(self.size_image_A, conv_size=conv_size)])
         else:
             tab_mlp_A = nn.ParameterList([])
-            for ii in range(T):
+            for _ in range(T):
                 tab_mlp_A.append(CNN2D(self.size_image_A, conv_size=conv_size))
         
         # On pourrait ici pre-entrainer les reseaux a predir un A appris par un premier reseau
         self.tab_mlp_A = tab_mlp_A
 
-    def forward(self, X, E_init=None, A_init=None, indMbDisp=-1):
+    def forward(self, X, E_init=None, A_init=None):
         # A_initNetA : of shape (nb batchs, nb sources, nb pixel), i.e. a vectorized image
     
         E_pred_tab = []
@@ -581,13 +569,8 @@ class RALMU(nn.Module, HSUModel):
             Aa = soft(Aa)# For nonnegativity
 
             A_pred = A_pred * Aa * torch.bmm(torch.transpose(E_pred,1,2),X)/(torch.bmm(torch.transpose(E_pred,1,2),torch.bmm(E_pred,A_pred)))
-            A_pred = A_pred.clip(min=1e-7,max=1e4) # CK : tenter de mettre max = 1 ne semble pas vraiment amÃ©liorer
-            if indMbDisp >= 0:
-                print('A_pred: layer %s,minibatcA %s, minimum %s:'%(t,indMbDisp,A_pred.min()))
-                print('A_pred: layer %s,minibatcA %s, maximum %s:'%(t,indMbDisp,A_pred.max()))
-                print('grad A den min %s'%(torch.bmm(torch.transpose(E_pred,1,2),torch.bmm(E_pred,A_pred))).min())
-                print('grad A  den max %s'%(torch.bmm(torch.transpose(E_pred,1,2),torch.bmm(E_pred,A_pred))).max())
-                
+            A_pred = A_pred.clip(min=1e-7,max=1e4)
+
             #------------- Partie sur E ---------------
             if t == 0: 
                 if self.shared:
@@ -605,17 +588,12 @@ class RALMU(nn.Module, HSUModel):
             E_pred = E_pred*Ae * torch.bmm(X,torch.transpose(A_pred,1,2))/(torch.bmm(torch.bmm(E_pred,A_pred),torch.transpose(A_pred,1,2)))
             
             E_pred = E_pred.clip(min=1e-7,max=1e4)
-            if indMbDisp >= 0:
-                print('E_pred: layer %s,minibatcA %s, minimum %s:'%(t,indMbDisp,E_pred.min()))
-                print('E_pred: layer %s,minibatcA %s, maximum %s:'%(t,indMbDisp,E_pred.max()))
-                print('grad E den min %s'%(torch.bmm(torch.bmm(E_pred,A_pred),torch.transpose(A_pred,1,2))).min())
-                print('grad E den max %s'%(torch.bmm(torch.bmm(E_pred,A_pred),torch.transpose(A_pred,1,2))).max())
 
             A_pred_tab.append(A_pred)
             E_pred_tab.append(E_pred)
             
-        E_est = E_pred
-        A_est = A_pred
+        E_est = E_pred_tab[-1]
+        A_est = A_pred_tab[-1]
         X_reconstruct = E_est @ A_est
 
         return E_est, A_est, X_reconstruct

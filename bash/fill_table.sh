@@ -1,28 +1,32 @@
 #!/bin/bash -l
-#SBATCH --job-name=job_name
-#SBATCH --output=%x_%j.out      # Output file (%x for job name, %j for job ID)
-#SBATCH --error=%x_%j.err       # Error file
-#SBATCH -p P100
-#SBATCH --nodes=1                     
+#SBATCH --job-name=fill_table
+#SBATCH --output=%x_%j.out      # %x for job name, %j for job ID
+#SBATCH --error=%x_%j.err
+#SBATCH -p V100-32GB
+#SBATCH --nodes=1
+#SBATCH --mem=30G
+# SBATCH --exclude=node42,node43
 #SBATCH --gres=gpu:1
-#SBATCH --cpus-per-task=1
+#SBATCH --cpus-per-task=4
 #SBATCH --time=24:00:00
 
 # Print job details
 echo "Starting job on node: $(hostname)"
 echo "Job started at: $(date)"
 
-# Define variables for the job
-N_WORKERS=$SLURM_CPUS_PER_TASK
-EPOCHS=200
-BATCH_SIZE=4
-
 # Activate the environment
 eval "$(conda shell.bash hook)"
 conda activate hsu-env
 
+# Define variables for the job
+BATCH_SIZE=10
+PATCH_SIZE=5
+LR=0.00001
+EPOCHS=3000
+N_XP=1
+
 # Execute the Python script with specific arguments
-srun python /home/ids/edabier/HSU/SS-HSU_benchmark/bash/trainer.py 
+srun python /home/ids/edabier/HSU/SS-HSU_benchmark/fill_table.py --batch_size $BATCH_SIZE --patch_size $PATCH_SIZE --lr $LR --epochs $EPOCHS --n_xp $N_XP
 
 # Retrieve and log job information
 LOG_FILE="job_tracking.log"

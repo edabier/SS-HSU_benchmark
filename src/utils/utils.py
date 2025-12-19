@@ -9,6 +9,9 @@ import matplotlib.pyplot as plt
 import math
 import scipy.io as io
 import os
+import wandb
+from io import BytesIO
+from PIL import Image
 
 def CNNAEU_loss(target, pred):
     assert target.shape == pred.shape
@@ -49,90 +52,6 @@ def alter_MSE(y_true, y_pred):
     Average_mse = np.sum(mse) / len(mse)
     mse = np.insert(mse, num_em, Average_mse, axis=0)
     return mse
-
-class toutesLoss(nn.Module):
-    # For abundance matrices. To use it on EM, transpose the two inputs. (Doesn't correct permutations)
-    """
-    Args:
-        optLoss (int, optional): 
-            - 0 MSE on E and A
-            - 1 SAD on E and A
-            - 2 MSE on normalized E and A
-            - 3 SAD on E and MSE on A
-            - 4 SAD on E and NMSE on A
-            - 5 SAD on E term-wise NMSE on A
-            - 6 NMSE on A
-
-    """
-    def __init__(self,optLoss=0):
-        super(toutesLoss, self).__init__()
-        self.optLoss = optLoss
-        
-        if optLoss==1:
-            self.criterion = SADLoss()
-        elif optLoss==0 or optLoss==2:
-            self.criterion = nn.MSELoss(reduction='mean')
-            
-        elif optLoss==3:
-            self.critSAD = SADLoss()
-            self.critMSE = nn.MSELoss(reduction='mean')
-            
-        elif optLoss==4 or optLoss== 5 or optLoss==6:
-            self.critSAD = SADLoss()
-            self.critMSE = nn.MSELoss(reduction='sum')
-        
-    def forward(self,E,E_pred,A,A_pred):
-        if self.optLoss==1:
-            train_E = self.criterion(E,E_pred)
-            train_A = self.criterion(torch.transpose(A, 1, 2),torch.transpose(A_pred, 1, 2))
-            
-            train_loss = train_E + train_A
-            
-        elif self.optLoss==0:
-            train_E = self.criterion(E,E_pred)
-            train_A = self.criterion(A,A_pred)
-            
-            train_loss = train_E + train_A
-            
-        elif self.optLoss==2:
-            E_norm = normalize(E,p=2.0,dim=1)
-            E_pred_norm = normalize(E_pred,p=2.0,dim=1)
-            A_norm = normalize(A,p=2.0,dim=2)
-            A_pred_norm = normalize(A_pred,p=2.0,dim=2)
-
-            train_E = self.criterion(E_norm,E_pred_norm)
-            train_A = self.criterion(A_norm,A_pred_norm)
-            
-            train_loss = train_E + train_A
-
-        elif self.optLoss==3:
-            train_E = self.critSAD(E,E_pred)
-            train_A = 1000*self.critMSE(A,A_pred)
-            
-            train_loss = train_E + train_A
-            
-        elif self.optLoss==4:
-            train_E = self.critSAD(E,E_pred)
-            train_A = self.critMSE(A,A_pred)/(torch.norm(A)**2)
-            
-            train_loss = train_E + train_A
-            
-        elif self.optLoss==5:
-            train_E = self.critSAD(E,E_pred)
-            train_A = 0
-            
-            for ii in range(A.size()[1]):
-                train_A += self.critMSE(A[:,ii,:],A_pred[:,ii,:])/(torch.norm(A[:,ii,:])**2)
-            
-            train_loss = train_E + train_A
-            
-        elif self.optLoss==6:# Pas de loss sur E, seulement sur A
-            train_A = self.critMSE(A,A_pred)/(torch.norm(A)**2)
-            train_E = torch.zeros(1)
-            
-            train_loss = train_A
-            
-        return train_loss,train_E,train_A
     
 class PolyLR(_LRScheduler):
     def __init__(self, optimizer, max_iter, power=0.99, last_epoch=-1):
@@ -167,7 +86,7 @@ class HSI_dataset(Dataset):
         if dtype is None:
             dtype = torch.float32
 
-        data_path = "datasets/" + dataset + ".mat"
+        data_path = "/home/ids/edabier/HSU/SS-HSU_benchmark/datasets/" + dataset + ".mat"
         data = io.loadmat(data_path)
         
         if dataset == 'samson':
@@ -301,11 +220,11 @@ def create_dataloader(dataset, dev, train_split=None, patch_size=None, batch_siz
         generator = torch.Generator(dev)
         train_set, test_set = random_split(dataset, lengths=[train_split, 1-train_split], generator=generator)
 
-        train_loader = DataLoader(train_set, batch_size)
-        test_loader = DataLoader(test_set, batch_size)
+        train_loader = DataLoader(train_set, batch_size, persistant_workers=True, pin_memory=True)
+        test_loader = DataLoader(test_set, batch_size, persistant_workers=True, pin_memory=True)
         return train_loader, test_loader, dataset.B, dataset.col
     else:
-        train_loader = DataLoader(dataset, batch_size)
+        train_loader = DataLoader(dataset, batch_size, persistant_workers=True, pin_memory=True)
         return train_loader, dataset.B, dataset.col
             
 def save_model(model, optimizer, directory, name, epoch, is_permanent=False):
@@ -375,7 +294,7 @@ def order_endmembers(endmembers, endmembersGT):
     Average_SAM = np.sum(SAD_)/ len(SAD_)
     return dict, SAD_, Average_SAM
 
-def compute_metrics_and_plot(e_hat, e_gt, a_hat, a_gt, dataset_name=None):
+def compute_metrics_and_plot(e_hat, e_gt, a_hat, a_gt, name=None, use_wandb=False):
     """
     Computes the SAD of predicted E and MSE of predicted A
     """
@@ -387,30 +306,30 @@ def compute_metrics_and_plot(e_hat, e_gt, a_hat, a_gt, dataset_name=None):
     n = num_E // 2
     if num_E % 2 != 0: n = n + 1
 
-    dict, _, Average_SAM = order_endmembers(e_hat.cpu().numpy(), e_gt.cpu().numpy())
+    dict, _, Average_SAM = order_endmembers(e_hat.detach().cpu().numpy(), e_gt.detach().cpu().numpy())
     sad_ordered = []
     endmember_ordered = []
     abundance_ordered = []
 
     fig = plt.figure(num=1, figsize=(8, 8))
     plt.clf()
-    title = f"{dataset_name} aSAM score for all E: " + format(Average_SAM, '.3f') + " radians"
+    title = f"{name} aSAM score for all E: " + format(Average_SAM, '.3f') + " radians"
     st = plt.suptitle(title)
     for i in range(num_E):
         e_hat[i, :] = e_hat[i, :] / e_hat[i, :].max()
         e_gt[i, :] = e_gt[i, :] / e_gt[i, :].max()
 
     for i in range(num_E):
-        endmember_ordered.append(e_hat[dict[i]].cpu())
-        abundance_ordered.append(a_hat[dict[i], :, :].detach().cpu())
+        endmember_ordered.append(e_hat[dict[i]].detach().cpu().numpy())
+        abundance_ordered.append(a_hat[dict[i], :, :].detach().cpu().numpy())
     endmember_ordered = np.array(endmember_ordered)
     for i in range(num_E):
-        z = numpy_SAD(endmember_ordered[i], e_gt[i, :].cpu())
+        z = numpy_SAD(endmember_ordered[i], e_gt[i, :].detach().cpu().numpy())
         sad_ordered.append(z)
 
     for i in range(num_E):
         ax = plt.subplot(2, n, i + 1)
-        plt.plot(e_gt[i, :].cpu(), 'r', linewidth=1.0, label='GT')
+        plt.plot(e_gt[i, :].detach().cpu(), 'r', linewidth=1.0, label='GT')
         plt.plot(endmember_ordered[i, :], 'k-', linewidth=1.0, label='predict')
         plt.legend()
         ax.set_title("SAD: " + format(sad_ordered[i], '.4f'))
@@ -421,7 +340,7 @@ def compute_metrics_and_plot(e_hat, e_gt, a_hat, a_gt, dataset_name=None):
 
     abundance_ordered = np.array(abundance_ordered)
 
-    mse = alter_MSE(a_gt.cpu().numpy(), abundance_ordered)
+    mse = alter_MSE(a_gt.detach().cpu().numpy(), abundance_ordered)
 
     plt.tight_layout()
     st.set_y(0.95)
@@ -429,9 +348,21 @@ def compute_metrics_and_plot(e_hat, e_gt, a_hat, a_gt, dataset_name=None):
     plt.draw()
     plt.pause(0.001)
 
+    if use_wandb:
+        buf = BytesIO()
+        plt.savefig(buf, format='png')
+        plt.close()
+        buf.seek(0)
+        
+        img = Image.open(buf)
+        img_array = np.array(img)
+
+        # Log the image to wandb
+        wandb.log({"Endmember extraction": wandb.Image(img_array)})
+
     fig, axes = plt.subplots(a_hat.shape[0], 2, figsize=(5, 10))
-    axes[0, 0].set_title("Abundance pred", fontsize=12)
-    axes[0, 1].set_title("Abundance GT", fontsize=12)
+    axes[0, 0].set_title(f"{name}_pred", fontsize=12)
+    axes[0, 1].set_title(f"{name}_GT", fontsize=12)
 
     # Plot tensor images
     for i in range(a_hat.shape[0]):
@@ -445,6 +376,18 @@ def compute_metrics_and_plot(e_hat, e_gt, a_hat, a_gt, dataset_name=None):
     plt.subplots_adjust(wspace=0.05, hspace=0.1)
     plt.tight_layout()
     plt.show()
+
+    if use_wandb:
+        buf = BytesIO()
+        plt.savefig(buf, format='png')
+        plt.close()
+        buf.seek(0)
+        
+        img = Image.open(buf)
+        img_array = np.array(img)
+
+        # Log the image to wandb
+        wandb.log({"Abundance extraction": wandb.Image(img_array)})
 
     return mse, sad_ordered
 
