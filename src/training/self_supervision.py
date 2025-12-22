@@ -54,9 +54,6 @@ class SupervisedTrainer():
             
             for Y, E, A in dataloader:
                 self.optimizer.zero_grad()
-                Y = Y.to(non_blocking=True)
-                E = E.to(non_blocking=True)
-                A = A.to(non_blocking=True)
 
                 A_init_disp = A.to(torch.float32)
                 E_init_disp = torch.ones(E.size(),dtype=torch.float32)
@@ -143,9 +140,6 @@ class ReconstructionError(SelfSupervisedTrainer):
             
             for Y, E, A in dataloader:
                 self.optimizer.zero_grad()
-                Y = Y.to(non_blocking=True)
-                E = E.to(non_blocking=True)
-                A = A.to(non_blocking=True)
 
                 if self.patch_size is not None:
                     k = int((Y.shape[2]**0.5)//self.patch_size)
@@ -239,9 +233,6 @@ class DIP(SelfSupervisedTrainer):
             train_loss = 0
             
             for Y, E, A in dataloader:
-                Y = Y.to(non_blocking=True)
-                E = E.to(non_blocking=True)
-                A = A.to(non_blocking=True)
 
                 if self.patch_size is not None:
                     k = int((Y.shape[2]**0.5)//self.patch_size)
@@ -359,9 +350,6 @@ class TwoStagesNet(SelfSupervisedTrainer):
             train_loss = 0
             
             for Y, E, A in dataloader:
-                Y = Y.to(non_blocking=True)
-                E = E.to(non_blocking=True)
-                A = A.to(non_blocking=True)
 
                 if self.patch_size is not None:
                     k = int((Y.shape[2]**0.5)//self.patch_size)

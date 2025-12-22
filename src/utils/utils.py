@@ -201,7 +201,7 @@ class HSI_dataset(Dataset):
         # Return the patch and the full E
         return Y_patch, self.E, A_patch
    
-def create_dataloader(dataset, dev, train_split=None, patch_size=None, batch_size=1, dtype=torch.float32):
+def create_dataloader(dataset, dev, train_split=None, patch_size=None, batch_size=1, num_workers=1, dtype=torch.float32):
     """
     Creates dataloader(s) for a given dataset
     
@@ -220,11 +220,11 @@ def create_dataloader(dataset, dev, train_split=None, patch_size=None, batch_siz
         generator = torch.Generator(dev)
         train_set, test_set = random_split(dataset, lengths=[train_split, 1-train_split], generator=generator)
 
-        train_loader = DataLoader(train_set, batch_size, persistant_workers=True, pin_memory=True)
-        test_loader = DataLoader(test_set, batch_size, persistant_workers=True, pin_memory=True)
+        train_loader = DataLoader(train_set, batch_size, num_workers=num_workers)
+        test_loader = DataLoader(test_set, batch_size, num_workers=num_workers)
         return train_loader, test_loader, dataset.B, dataset.col
     else:
-        train_loader = DataLoader(dataset, batch_size, persistant_workers=True, pin_memory=True)
+        train_loader = DataLoader(dataset, batch_size, num_workers=num_workers)
         return train_loader, dataset.B, dataset.col
             
 def save_model(model, optimizer, directory, name, epoch, is_permanent=False):

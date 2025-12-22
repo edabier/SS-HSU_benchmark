@@ -3,6 +3,8 @@ import scipy.io as io
 import argparse
 import matplotlib.pyplot as plt
 import wandb
+import os
+import sys
 
 import src.utils.utils as utils
 import src.models.models as models
@@ -31,7 +33,7 @@ def main(args):
         Y_init = Y_init.reshape(Y_init.shape[0], int(Y_init.shape[1]**0.5), int(Y_init.shape[1]**0.5))
         H, W = Y_init.shape[1], Y_init.shape[2]
 
-        loader, _, _ = utils.create_dataloader(dataset, dev, batch_size=args.batch_size)
+        loader, _, _ = utils.create_dataloader(dataset, dev, batch_size=args.batch_size, num_workers=args.num_workers)
 
         for n in range(n_xp):
 
@@ -164,23 +166,39 @@ def main(args):
 
 if __name__ == "__main__":
 
-    run = wandb.init(project=f"Fill_table")
-
-    if torch.cuda.is_available():
-        dev = "cuda:0"
-        torch.set_default_device(dev)
-    else:
-        print(f"{torch.cuda.is_available()}")
-        dev = "cpu"
-    
-    print(f"Starting project on dev: {dev}")
-
     parser = argparse.ArgumentParser()
     parser.add_argument("--batch_size", default=1, type=int)
     parser.add_argument("--patch_size", default=5, type=int)
     parser.add_argument("--n_xp", default=5, type=int)
     parser.add_argument("--lr", default=1e-2, type=float)
     parser.add_argument("--epochs", default=200, type=int)
+    parser.add_argument("--num_workers", default=1, type=int)
     args = parser.parse_args()
+
+    torch.multiprocessing.set_start_method('spawn')
+
+    if not torch.cuda.is_available():
+        print("CUDA_VISIBLE_DEVICES =", os.environ.get("CUDA_VISIBLE_DEVICES"))
+        print("GPUs seen by torch:", torch.cuda.device_count())
+        sys.exit("FATAL: CUDA not available — aborting")
+    else:
+        dev = "cuda:0"
+        torch.set_default_device(dev)
+
+    run = wandb.init(project=f"Fill_table",
+                     config={
+                        "learning_rate": args.lr,
+                        "batch_size": args.batch_size,
+                        "epochs": args.epochs,
+                    },)
+
+    # if torch.cuda.is_available():
+    #     dev = "cuda:0"
+    #     torch.set_default_device(dev)
+    # else:
+    #     print(f"{torch.cuda.is_available()}")
+    #     dev = "cpu"
+    
+    print(f"Starting project on dev: {dev}")
     
     main(args)

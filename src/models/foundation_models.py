@@ -28,6 +28,8 @@ class FoundationModel():
         Instantiate the provided foundation model
         """
         self.model_name = model_name
+        self.patch_size = patch_size
+        self.im_size = im_size
 
         if model_name == "SpectralEarth":
             model = SpecViTBase()
@@ -39,8 +41,8 @@ class FoundationModel():
             self.im_size = 128
 
         elif model_name == "HyperFree":
-            assert patch_size is None, "Patch_size must be set"
-            assert im_size is None, "im_size must be set"
+            assert self.patch_size is not None, "Patch_size must be set"
+            assert self.im_size is not None, "im_size must be set"
 
             pred = build_HyperFree_vit_b(checkpoint="/home/ids/edabier/HSU/HyperFree/data/HyperFree-b.pth", image_size=im_size, vit_patch_size=patch_size)
             self.model = predictor.HyperFree_Predictor(pred)
@@ -65,52 +67,54 @@ class FoundationModel():
     def create_decoder(self, c, B):
         self.decoder = Decoder(c, B)
 
-    def get_features(self, x, wavelengths=None):
+    def get_features(self, Y, wavelengths=None):
         """
         Forwards the input HSI to the model's encoder to get features
 
         Args:
-            x: input HSI tensor of shape (batch, B, H, W)
-            for HyperFree, H and W must be multiples of batch_size=8 and values must be normalized (/max(Y))
+            Y: input HSI tensor of shape (batch, B, H, W)
+            for HyperFree, H and W must be multiples of patch_size and values must be normalized (/max(Y))
         """
-        if x.dim() == 4:
-            batch, B, H, W = x.shape
-        elif x.dim() == 3:
-            B, H, W = x.shape
-            x = x.unsqueeze(0)
+        if Y.dim() == 4:
+            batch, B, H, W = Y.shape
+        elif Y.dim() == 3:
+            B, H, W = Y.shape
+            Y = Y.unsqueeze(0)
         else:
             print("Input HSI must be of shape (B, H, W) or (batch, B, H, W)")
         
         if H > self.im_size:
             print(f"Input HSI larger than expected size ({self.im_size}), cutting it to match")
-            x = x[:, :, :self.im_size, :self.im_size]
+            Y = Y[:, :, :self.im_size, :self.im_size]
         elif H < self.im_size:
             # TO DO
             print(f"Input HSI smaller than expected size ({self.im_size}), padding to match")
 
         if self.model_name == "HyperFree":
-            assert wavelengths is None, "HyperFree needs wavelengths list for spectral embedding"
+            assert wavelengths is not None, "HyperFree needs wavelengths list for spectral embedding"
             GSD = 0.456
-            ratio = 1024 / (max(x.shape[2], x.shape[3]))
+            ratio = 1024 / (max(Y.shape[2], Y.shape[3]))
             GSD = GSD / ratio
             GSD = torch.tensor([GSD])
 
-            input_im = self.model.transform.apply_image_torch(x)
-            self.model.set_torch_image(input_im, original_image_size=(x.shape[1], x.shape[2]), spectral_lengths=wavelengths, GSD=GSD)
+            input_im = self.model.transform.apply_image_torch(Y)
+            self.model.set_torch_image(input_im, original_image_size=(Y.shape[1], Y.shape[2]), spectral_lengths=wavelengths, GSD=GSD)
+
+            return self.model.features
         else:
-            return self.model(x)
+            return self.model(Y)
     
     def get_abundances(self, F):
-        # TO DO: define a method to extract A from features F
+        # TO DO: define a method to eYtract A from features F
         pass
 
-    def unmix(self, x):
-        F = self.get_features(x)
+    def unmix(self, Y):
+        F = self.get_features(Y)
         A = self.get_abundances(F)
-        x_hat = self.decoder(A)
+        Y_hat = self.decoder(A)
         E = self.decoder.get_endmembers()
 
-        return E, A, x_hat
+        return E, A, Y_hat
 
 class weightConstraint(object):
     def __init__(self):
