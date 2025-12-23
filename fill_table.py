@@ -10,22 +10,22 @@ import src.utils.utils as utils
 import src.models.models as models
 import src.training.self_supervision as ssl
 
-def main(args):
+def main(args, dev):
     patch_size = args.patch_size
     n_xp = args.n_xp
 
     datasets = ["urban", "apex", "jasper", "samson"]
 
     # shape (n_datasets, n_models, n_trainers, n_xp)
-    mses = torch.zeros(len(datasets), 4, 3, n_xp)
-    sads = torch.zeros(len(datasets), 4, 3, n_xp)
+    mses = torch.zeros(len(datasets), 2, 4, n_xp, device=dev)
+    sads = torch.zeros(len(datasets), 2, 4, n_xp, device=dev)
 
     for i_dataset, dataset in enumerate(datasets):
 
         print(f"####### {dataset} #######")
 
         data = io.loadmat(f"/home/ids/edabier/HSU/SS-HSU_benchmark/datasets/{dataset}.mat")
-        Y_init = torch.tensor(data["Y"])
+        Y_init = torch.tensor(data["Y"], device=dev)
         Y_init = Y_init.to(torch.float32)
         E = torch.tensor(data["E"])
         B, c, N = E.shape[0], E.shape[1], Y_init.shape[1]
@@ -33,7 +33,7 @@ def main(args):
         Y_init = Y_init.reshape(Y_init.shape[0], int(Y_init.shape[1]**0.5), int(Y_init.shape[1]**0.5))
         H, W = Y_init.shape[1], Y_init.shape[2]
 
-        loader, _, _ = utils.create_dataloader(dataset, dev, batch_size=args.batch_size, num_workers=args.num_workers)
+        loader, _, _ = utils.create_dataloader(dataset, dev, batch_size=args.batch_size)
 
         for n in range(n_xp):
 
@@ -66,10 +66,12 @@ def main(args):
 
             # NALMU
             nalmu = models.NALMU(B=B, c=c, N=N)
+            nalmu = nalmu.to(dev)
             model_list.append(nalmu)
 
             # RALMU
             ralmu = models.RALMU(B=B, c=c, im_size=H)
+            ralmu = ralmu.to(dev)
             model_list.append(ralmu)
 
             """
@@ -108,7 +110,7 @@ def main(args):
 
                     print(f"Starting {trainer.__class__.__name__} startegy")
 
-                    e_hat, a_hat, train_losses = trainer.train(loader)
+                    e_hat, a_hat, train_losses = trainer.train(loader, dev)
 
                     plt.plot(train_losses)
                     test = {f"{dataset}_{model.__class__.__name__}_{trainer.__class__.__name__}_train_loss": wandb.Image(plt)}
@@ -172,10 +174,9 @@ if __name__ == "__main__":
     parser.add_argument("--n_xp", default=5, type=int)
     parser.add_argument("--lr", default=1e-2, type=float)
     parser.add_argument("--epochs", default=200, type=int)
-    parser.add_argument("--num_workers", default=1, type=int)
     args = parser.parse_args()
 
-    torch.multiprocessing.set_start_method('spawn')
+    # torch.multiprocessing.set_start_method('spawn')
 
     if not torch.cuda.is_available():
         print("CUDA_VISIBLE_DEVICES =", os.environ.get("CUDA_VISIBLE_DEVICES"))
@@ -201,4 +202,4 @@ if __name__ == "__main__":
     
     print(f"Starting project on dev: {dev}")
     
-    main(args)
+    main(args, dev)

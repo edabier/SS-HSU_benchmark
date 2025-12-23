@@ -45,7 +45,7 @@ class SupervisedTrainer():
         
         return train_A + train_E
 
-    def train(self, dataloader):
+    def train(self, dataloader, dev):
             
         train_losses = []
         for epoch in range(self.epochs):
@@ -54,6 +54,10 @@ class SupervisedTrainer():
             
             for Y, E, A in dataloader:
                 self.optimizer.zero_grad()
+                
+                Y = Y.to(dev)
+                E = E.to(dev)
+                A = A.to(dev)
 
                 A_init_disp = A.to(torch.float32)
                 E_init_disp = torch.ones(E.size(),dtype=torch.float32)
@@ -131,7 +135,7 @@ class ReconstructionError(SelfSupervisedTrainer):
         if scheduler is not None:
             self.scheduler = scheduler
     
-    def train(self, dataloader):
+    def train(self, dataloader, dev):
             
         train_losses = []
         for epoch in range(self.epochs):
@@ -140,6 +144,10 @@ class ReconstructionError(SelfSupervisedTrainer):
             
             for Y, E, A in dataloader:
                 self.optimizer.zero_grad()
+                
+                Y = Y.to(dev)
+                E = E.to(dev)
+                A = A.to(dev)
 
                 if self.patch_size is not None:
                     k = int((Y.shape[2]**0.5)//self.patch_size)
@@ -225,7 +233,7 @@ class DIP(SelfSupervisedTrainer):
         if scheduler is not None:
             self.scheduler = scheduler
     
-    def train(self, dataloader):
+    def train(self, dataloader, dev):
             
         train_losses = []
         for epoch in range(self.epochs):
@@ -233,6 +241,10 @@ class DIP(SelfSupervisedTrainer):
             train_loss = 0
             
             for Y, E, A in dataloader:
+                      
+                Y = Y.to(dev)
+                E = E.to(dev)
+                A = A.to(dev)
 
                 if self.patch_size is not None:
                     k = int((Y.shape[2]**0.5)//self.patch_size)
@@ -341,7 +353,7 @@ class TwoStagesNet(SelfSupervisedTrainer):
         
         return loss_forward + loss_denoiser + loss_sad
     
-    def train(self, dataloader):
+    def train(self, dataloader, dev):
         torch.autograd.set_detect_anomaly(True)
             
         train_losses = []
@@ -350,6 +362,10 @@ class TwoStagesNet(SelfSupervisedTrainer):
             train_loss = 0
             
             for Y, E, A in dataloader:
+                      
+                Y = Y.to(dev)
+                E = E.to(dev)
+                A = A.to(dev)
 
                 if self.patch_size is not None:
                     k = int((Y.shape[2]**0.5)//self.patch_size)
@@ -485,7 +501,7 @@ class EGU_Net(SelfSupervisedTrainer):
         
         return pure_abds, e_avg
         
-    def train(self, dataloader):
+    def train(self, dataloader, dev):
             
         if self.load_checkpoint is not None: 
             start_epoch = utils.load_checkpoint(self.load_checkpoint, self.model, self.optimizer)
@@ -494,7 +510,8 @@ class EGU_Net(SelfSupervisedTrainer):
         
         train_losses = []
         ce = nn.CrossEntropyLoss()
-        mse = nn.MSELoss()
+        mse = nn.MSELoss()      
+
         
         for epoch in range(start_epoch, self.epochs):
             
@@ -502,6 +519,10 @@ class EGU_Net(SelfSupervisedTrainer):
         
             for Y, E, A in dataloader:
                 self.optimizer.zero_grad()
+                      
+                Y = Y.to(dev)
+                E = E.to(dev)
+                A = A.to(dev)
                 
                 # Top part: unmixing pure pixels
                 # We create a small 2x2 image by repeating each pure pixel 4 times, and forward it to the model's encoder
@@ -658,7 +679,7 @@ class GeneratedDataset(SelfSupervisedTrainer):
         
         return loss_e + loss_a
     
-    def train(self):
+    def train(self, dev):
         if self.wandb:
             run = wandb.init(
                 project=f"{self.model.__class__.__name__}_train",
@@ -688,9 +709,9 @@ class GeneratedDataset(SelfSupervisedTrainer):
                 a_gt = self.dataset.A[i]
                 y_gt = self.dataset.Y[i]
 
-                y_gt = y_gt.to(non_blocking=True)
-                e_gt = e_gt.to(non_blocking=True)
-                a_gt = a_gt.to(non_blocking=True)
+                y_gt = y_gt.to(non_blocking=True, device=dev)
+                e_gt = e_gt.to(non_blocking=True, device=dev)
+                a_gt = a_gt.to(non_blocking=True, device=dev)
                 
                 self.optimizer.zero_grad()
                 

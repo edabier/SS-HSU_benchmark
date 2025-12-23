@@ -2,7 +2,7 @@
 #SBATCH --job-name=fill_table
 #SBATCH --output=%x_%j.out      # %x for job name, %j for job ID
 #SBATCH --error=%x_%j.err
-#SBATCH -p V100-32GB
+#SBATCH -p A100
 #SBATCH --nodes=1
 #SBATCH --mem=30G
 #SBATCH --exclude=node42,node43
@@ -26,7 +26,7 @@ BATCH_SIZE=10
 PATCH_SIZE=5
 LR=0.00001
 EPOCHS=3000
-N_XP=5
+N_XP=1
 
 # Execute the Python script with specific arguments
 srun python /home/ids/edabier/HSU/SS-HSU_benchmark/fill_table.py --batch_size $BATCH_SIZE --patch_size $PATCH_SIZE --lr $LR --epochs $EPOCHS --n_xp $N_XP # --num_workers $N_WORKERS

@@ -14,6 +14,9 @@ import models_mae_spectral
 sys.path.append(f"{global_path}/HyperFree")
 from HyperFree import build_HyperFree_vit_b, predictor
 
+sys.path.append(f"{global_path}/DOFA")
+from dofa_v1 import vit_base_patch16
+
 if torch.cuda.is_available():
     dev = "cuda:0"
     torch.set_default_device(dev)
@@ -23,10 +26,15 @@ else:
 
 
 class FoundationModel():
-    def __init__(self, model_name, patch_size=None, im_size=None):
+    def __init__(self, model_name, patch_size=None, im_size=None, channels=None):
         """
         Instantiate the provided foundation model
         """
+        models = ["SpectralEarth", "SpectralGPT", "DOFA", "HyperFree", "HyperSL", "HyperSIGMA"]
+
+        if model_name not in models:
+            raise ValueError("The provided model_name does not correspond to any of [SpectralEarth, SpectralGPT, DOFA, HyperFree, HyperSL, HyperSIGMA]")
+
         self.model_name = model_name
         self.patch_size = patch_size
         self.im_size = im_size
@@ -40,6 +48,26 @@ class FoundationModel():
             self.model = model
             self.im_size = 128
 
+        elif model_name == "SpectralGPT":
+            assert channels is not None, "The number of channels must be specified for SpectralGPT"
+            state_dict = torch.load(f"{global_path}/IEEE_TPAMI_SpectralGPT/data/SpectralGPT+.pth", map_location=dev, weights_only=False)["model"]
+            self.im_size = 128
+            spectral_gpt = models_mae_spectral.mae_vit_base_patch8_128(num_frames=channels, pred_t_dim=channels)
+            # state_dict = checkpoint["model"] if "model" in checkpoint else checkpoint
+            # spectral_gpt.load_state_dict(state_dict, strict=False)
+            encoder_keys = [k for k in state_dict.keys() if k.startswith('patch_embed') or k.startswith('blocks') or k.startswith('norm')]
+            encoder_state_dict = {k: state_dict[k] for k in encoder_keys}
+            spectral_gpt.load_state_dict(encoder_state_dict, strict=False)
+                        
+            self.model = spectral_gpt
+            
+        elif model_name == "DOFA":
+            state_dict = torch.load("/home/ids/edabier/HSU/DOFA/checkpoints/DOFA_ViT_base_e100.pth", map_location=dev)
+            self.im_size = 224
+            model = vit_base_patch16()
+            model.load_state_dict(state_dict, strict=False)
+            self.model = model
+
         elif model_name == "HyperFree":
             assert self.patch_size is not None, "Patch_size must be set"
             assert self.im_size is not None, "im_size must be set"
@@ -52,17 +80,6 @@ class FoundationModel():
 
         elif model_name == "HyperSigma":
             pass
-
-        elif model_name == "SpectralGPT":
-            checkpoint = torch.load(f"{global_path}/IEEE_TPAMI_SpectralGPT/data/SpectralGPT+.pth", map_location=dev, weights_only=False)["model"]
-            img_size = 128
-            patch_size = 8
-            spectral_gpt = models_mae_spectral.__dict__[f"mae_vit_base_patch{patch_size}_{img_size}"]()
-            state_dict = checkpoint["model"] if "model" in checkpoint else checkpoint
-            spectral_gpt.load_state_dict(state_dict, strict=False)
-            
-            self.model = spectral_gpt
-            self.im_size = img_size
         
     def create_decoder(self, c, B):
         self.decoder = Decoder(c, B)
@@ -101,8 +118,16 @@ class FoundationModel():
             self.model.set_torch_image(input_im, original_image_size=(Y.shape[1], Y.shape[2]), spectral_lengths=wavelengths, GSD=GSD)
 
             return self.model.features
-        else:
+        
+        elif self.model_name == "DOFA":
+            assert wavelengths is not None, "DOFA needs wavelengths list for [?]"
+            return self.model.forward_features(Y, wave_lists=wavelengths) 
+        
+        elif self.model_name == "SpectralEarth":
             return self.model(Y)
+        
+        else:
+            pass
     
     def get_abundances(self, F):
         # TO DO: define a method to eYtract A from features F
