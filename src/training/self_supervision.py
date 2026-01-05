@@ -40,6 +40,9 @@ class SupervisedTrainer():
         sad = utils.SADLoss()
         mse = nn.MSELoss(reduction='sum')
         
+        if E_hat.dim() != 3:
+            E_hat = E_hat.unsqueeze(0)
+        
         train_A = mse(A_gt,A_hat)/(torch.norm(A_gt)**2)
         train_E = sad(E_gt,E_hat)
         
@@ -59,14 +62,28 @@ class SupervisedTrainer():
                 E = E.to(dev)
                 A = A.to(dev)
 
+                if self.patch_size is not None:
+                    k = int((Y.shape[2]**0.5)//self.patch_size)
+                    Y = Y.reshape(Y.shape[0], Y.shape[1], int(Y.shape[2]**0.5), int(Y.shape[2]**0.5))
+                    s = k*self.patch_size
+                    Y = Y[:, :, :s, :s]
+                    Y = Y.reshape(Y.shape[0], Y.shape[1], s**2)
+                    A = A.reshape(A.shape[0], A.shape[1], int(A.shape[2]**0.5), int(A.shape[2]**0.5))
+                    A = A[:, :, :s, :s]
+                    A = A.reshape(A.shape[0], A.shape[1], s**2)
+
                 A_init_disp = A.to(torch.float32)
                 E_init_disp = torch.ones(E.size(),dtype=torch.float32)
                 A_init = torch.ones_like(A_init_disp)
                 E_init = torch.ones_like(E_init_disp)
 
-                e_hat, a_hat, y_hat = self.model(Y, E_init=E_init, A_init=A_init)
-                    
-                loss = self.criterion(E, e_hat, A, a_hat)
+                if self.has_decoder:
+                    e_hat, a_hat, y_hat = self.model(Y)
+                else:
+                    e_hat, a_hat, y_hat = self.model(Y, E_init=E_init, A_init=A_init)
+
+                # loss = self.criterion(E, e_hat, A, a_hat)
+                loss = self.model.loss(E, e_hat, A, a_hat, Y, y_hat)
                 train_loss += loss.item()
                 
                 loss.backward()
@@ -158,16 +175,16 @@ class ReconstructionError(SelfSupervisedTrainer):
                     A = A.reshape(A.shape[0], A.shape[1], int(A.shape[2]**0.5), int(A.shape[2]**0.5))
                     A = A[:, :, :s, :s]
                     A = A.reshape(A.shape[0], A.shape[1], s**2)
-                    # k = math.isqrt(Y.shape[2])//self.patch_size
-                    # Y = Y[:, :, :(k*self.patch_size)**2]
                 
                 A_init_disp = A.to(torch.float32)
                 E_init_disp = torch.ones(E.size(),dtype=torch.float32)
                 A_init = torch.ones_like(A_init_disp)
                 E_init = torch.ones_like(E_init_disp)
 
-                e_hat, a_hat, y_hat = self.model(Y, E_init=E_init, A_init=A_init)
-                # e_hat, a_hat, y_hat = self.model(Y)
+                if self.has_decoder:
+                    e_hat, a_hat, y_hat = self.model(Y)
+                else:
+                    e_hat, a_hat, y_hat = self.model(Y, E_init=E_init, A_init=A_init)
                     
                 # loss = self.criterion(Y, y_hat)
                 loss = utils.CNNAEU_loss(Y, y_hat)
@@ -255,19 +272,20 @@ class DIP(SelfSupervisedTrainer):
                     A = A.reshape(A.shape[0], A.shape[1], int(A.shape[2]**0.5), int(A.shape[2]**0.5))
                     A = A[:, :, :s, :s]
                     A = A.reshape(A.shape[0], A.shape[1], s**2)
-                    # k = math.isqrt(Y.shape[2])//self.patch_size
-                    # Y = Y[:, :, :(k*self.patch_size)**2]
 
                 self.optimizer.zero_grad()
                 
-                z = torch.randn_like(Y)
+                z = torch.rand_like(Y) + 1e-7
 
                 A_init_disp = A.to(torch.float32)
                 E_init_disp = torch.ones(E.size(),dtype=torch.float32)
                 A_init = torch.ones_like(A_init_disp)
                 E_init = torch.ones_like(E_init_disp)
 
-                e_hat, a_hat, y_hat = self.model(z, E_init=E_init, A_init=A_init)
+                if self.has_decoder:
+                    e_hat, a_hat, y_hat = self.model(z)
+                else:
+                    e_hat, a_hat, y_hat = self.model(z, E_init=E_init, A_init=A_init)
                 # e_hat, a_hat, y_hat = self.model(z)
                 
                 loss = self.criterion(Y, y_hat)
@@ -376,8 +394,6 @@ class TwoStagesNet(SelfSupervisedTrainer):
                     A = A.reshape(A.shape[0], A.shape[1], int(A.shape[2]**0.5), int(A.shape[2]**0.5))
                     A = A[:, :, :s, :s]
                     A = A.reshape(A.shape[0], A.shape[1], s**2)
-                    # k = math.isqrt(Y.shape[2])//self.patch_size
-                    # Y = Y[:, :, :(k*self.patch_size)**2]
 
                 self.optimizer.zero_grad()
                 
@@ -388,8 +404,10 @@ class TwoStagesNet(SelfSupervisedTrainer):
                 A_init = torch.ones_like(A_init_disp)
                 E_init = torch.ones_like(E_init_disp)
 
-                e_hat, a_hat, r = self.model(Y, E_init=E_init, A_init=A_init)
-                # e_hat, a_hat, r = self.model(Y)
+                if self.has_decoder:
+                    e_hat, a_hat, r = self.model(Y)
+                else:
+                    e_hat, a_hat, r = self.model(Y, E_init=E_init, A_init=A_init)
                 n = torch.randn_like(Y)
                 r = r + n
                 
