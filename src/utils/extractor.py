@@ -38,6 +38,70 @@ def batched_estimate_snr(Y, r_m, x):
 
     return snr_est
 
+def Eucli_dist(x,y):
+    a = torch.subtract(x, y)
+    return a.T @ a
+
+def SiVM(Y, c):
+    """
+    SiVM endmember extractor based on UnDIP's repository
+    
+    Args:
+        Y: input HSI to extract endmembers from (shape (B, h, w) or (B, N))
+        c (int): the number of endmembders to extract
+    """
+    batch = None
+    if Y.dim() != 3:
+        B, N = Y.shape
+    else:
+        batch, B, N = Y.shape
+        
+    # If no distf given, use Euclidean distance function
+    Z1 = torch.zeros((1, 1))
+    O1 = torch.ones((1, 1))
+    # Find farthest point
+    E = torch.zeros((c, N))
+    I = torch.zeros((c, 1))
+    V = torch.zeros((1, N))
+    ZA = torch.zeros((B, 1))
+
+    for i in range(N):
+        if batch is not None:
+            E[0, i] = Eucli_dist(Y[batch, :, i].reshape(B, 1), ZA)
+        else:
+            E[0, i] = Eucli_dist(Y[:, i].reshape(B, 1), ZA)
+
+    I = [torch.argmax(E[0, :]).item()]
+
+    for i in range(N):
+        if batch is not None:
+            E[0, i] = Eucli_dist(Y[batch, :, i].reshape(B, 1), Y[batch, :, I].reshape(B, 1))
+        else:
+            E[0, i] = Eucli_dist(Y[:, i].reshape(B, 1), Y[:, I].reshape(B, 1))
+
+    for v in range(1, c):
+        E1 = torch.concatenate((E[0:v, I].reshape((v, len(I))), torch.ones((v, 1))), axis=1)
+        E2 = torch.concatenate((torch.ones((1, v)), Z1), axis=1)
+        E4 = torch.concatenate((E1, E2), axis=0)
+        E4 = torch.linalg.inv(E4)
+        for i in range(N):
+            E3 = torch.concatenate((E[0:v,i].reshape((v, 1)), O1), axis=0)
+            V[0, i] = (E3.T @ E4) @ E3
+        I.append(torch.argmax(V).item())
+        for i in range(N):
+            if batch is not None:
+                E[v, i] = Eucli_dist(Y[batch, :, i].reshape(B, 1), Y[batch, :, I[v]].reshape(B, 1))
+            else:
+                E[v, i] = Eucli_dist(Y[:, i].reshape(B, 1), Y[:, I[v]].reshape(B, 1))
+                
+    I = torch.tensor(I)
+    per = torch.argsort(I)
+    # I = torch.sort(I)
+    
+    E = E[per, :]
+    
+    return I, E
+
 def VCA(Y, c, seed=None, snr_input=0, verbose=False):
     """
     Vertex Component Analysis algorithm by Jose M. P. Nascimento and Jose M. B. Dias

@@ -130,7 +130,7 @@ def numpy_order_endmembers(endmembers, endmembersGT):
     return dict, SAD_, Average_SAM
 
 def order_endmembers(endmembers, endmembersGT):
-    num_endmembers = endmembers.shape[0]
+    num_endmembers = endmembers.shape[2]
     device = endmembers.device
     dict = {}
     SAD_ = []
@@ -144,8 +144,8 @@ def order_endmembers(endmembers, endmembersGT):
     # Compute SAD matrix
     for i in range(num_endmembers):
         for j in range(num_endmembers):
-            sad_mat[i, j] = sad(endmembersGT[i, :].unsqueeze(0), endmembers[i, :].unsqueeze(0))
-
+            sad_mat[i, j] = sad(endmembersGT[:, i, :].unsqueeze(0), endmembers[:, i, :].unsqueeze(0))
+    
     rows = 0
     while rows < num_endmembers:
         minimum = sad_mat.min()
@@ -166,6 +166,51 @@ def order_endmembers(endmembers, endmembersGT):
     Average_SAM = SAD_.sum() / len(SAD_)
 
     return dict, SAD_, Average_SAM
+
+def crop_patch_image(Y, patch_size, A=None):
+    """
+    Crops the input HSI to a square with the max amount of pixels multiple of patch_size
+    
+    Args:
+        Y: Input HSI to be cropped
+        patch_size: The patch size with which to split the image
+        A: The abundance maps to be cropped
+    """
+    
+    batch = None
+    if Y.dim() != 3:
+        B, N = Y.shape
+    else:
+        batch, B, N = Y.shape
+        
+    k = int((N**0.5)//patch_size)
+    
+    if batch is not None:
+        Y = Y.reshape(batch, B, int(N**0.5), int(N**0.5))
+        s = k*patch_size
+        Y = Y[:, :, :s, :s]
+        Y = Y.reshape(batch, B, s**2)
+        
+        if A is not None:
+            A = A.reshape(batch, A.shape[1], int(N**0.5), int(N**0.5))
+            A = A[:, :, :s, :s]
+            A = A.reshape(batch, A.shape[1], s**2)    
+            return Y, A
+        else:
+            return Y
+    else:
+        Y = Y.reshape(B, int(N**0.5), int(N**0.5))
+        s = k*patch_size
+        Y = Y[:, :s, :s]
+        Y = Y.reshape(B, s**2)
+        
+        if A is not None:
+            A = A.reshape(A.shape[0], int(N**0.5), int(N**0.5))
+            A = A[:, :s, :s]
+            A = A.reshape(A.shape[0], s**2)    
+            return Y, A
+        else:
+            return Y
 
 def compute_metrics_and_plot(e_hat, e_gt, a_hat, a_gt, name=None, use_wandb=False):
     """
@@ -309,14 +354,14 @@ def test_model(model, test_loader, wandb=False):
     return mean_re, mean_sad
 
 class HSI_dataset(Dataset):    
-    def __init__(self, dataset, patch_size=None, dtype=None):
+    def __init__(self, dataset, path="/home/ids/edabier/HSU/SS-HSU_benchmark/datasets/", patch_size=None, dtype=None):
         
         self.dataset_name = dataset
         
         if dtype is None:
             dtype = torch.float32
 
-        data_path = "/home/ids/edabier/HSU/SS-HSU_benchmark/datasets/" + dataset + ".mat"
+        data_path = path + dataset + ".mat"
         data = io.loadmat(data_path)
         
         if dataset == 'samson':
@@ -431,7 +476,7 @@ class HSI_dataset(Dataset):
         # Return the patch and the full E
         return Y_patch, self.E, A_patch
    
-def create_dataloader(dataset, dev, train_split=None, patch_size=None, batch_size=1, dtype=torch.float32):
+def create_dataloader(dataset, path="/home/ids/edabier/HSU/SS-HSU_benchmark/datasets/", dev="cpu", train_split=None, patch_size=None, batch_size=1, dtype=torch.float32):
     """
     Creates dataloader(s) for a given dataset
     
@@ -442,9 +487,9 @@ def create_dataloader(dataset, dev, train_split=None, patch_size=None, batch_siz
         patch_size (int): whether or not to patch the input HSI
     """
     if patch_size is None:
-        dataset = HSI_dataset(dataset, dtype=dtype)
+        dataset = HSI_dataset(dataset, path, dtype=dtype)
     else:
-        dataset = HSI_dataset(dataset, patch_size, dtype=dtype)
+        dataset = HSI_dataset(dataset, path, patch_size, dtype=dtype)
         
     if train_split is not None:
         generator = torch.Generator(dev)

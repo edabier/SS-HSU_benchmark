@@ -109,14 +109,7 @@ def run_one_xp(mses, sads, i_dataset, n, Y_init, B, c, N, H, loader, dataset, ar
 
             with torch.no_grad():
                 if model_name == "Transformer_AE":
-                    k = int((Y.shape[1]**0.5)//args.patch_size)
-                    Y = Y.reshape(Y.shape[0], int(Y.shape[1]**0.5), int(Y.shape[1]**0.5))
-                    s = k*args.patch_size
-                    Y = Y[:, :s, :s]
-                    Y = Y.reshape(Y.shape[0], s**2)
-                    a_gt = a_gt.reshape(a_gt.shape[0],int(a_gt.shape[1]**0.5), int(a_gt.shape[1]**0.5))
-                    a_gt = a_gt[:, :s, :s]
-                    a_gt = a_gt.reshape(a_gt.shape[0], s**2)
+                    Y, a_gt = utils.crop_patch_image(Y, args.patch_size, a_gt)
                 e_hat, a_hat, y_hat = model.forward(Y, E_init=E_init, A_init=A_init)
 
             if e_hat.dim() == 3:

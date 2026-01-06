@@ -14,6 +14,57 @@ import src.models.models as models
 directory = "/home/ids/edabier/HSU/SS-HSU_benchmark/models"
 # directory = "models/"
 
+def train(model, dataloader, patch_size, has_decoder=True, epochs=320, lr=0.003, dev="cpu"):
+    optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
+            
+    train_losses = []
+    for epoch in range(epochs):
+        
+        train_loss = 0
+        
+        for Y, E, A in dataloader:
+            optimizer.zero_grad()
+            
+            Y = Y.to(dev)
+            E = E.to(dev)
+            A = A.to(dev)
+
+            if patch_size is not None:
+                Y, A = utils.crop_patch_image(Y, patch_size, A)
+
+            A_init_disp = A.to(torch.float32)
+            E_init_disp = torch.ones(E.size(),dtype=torch.float32)
+            A_init = torch.ones_like(A_init_disp)
+            E_init = torch.ones_like(E_init_disp)
+
+            if has_decoder:
+                e_hat, a_hat, y_hat = model(Y)
+            else:
+                e_hat, a_hat, y_hat = model(Y, E_init=E_init, A_init=A_init)
+
+            loss = model.loss(E, e_hat, A, a_hat, Y, y_hat)
+            train_loss += loss.item()
+            
+            loss.backward()
+            optimizer.step()
+            
+            if has_decoder:
+                with torch.no_grad():
+                    model.decoder.apply(models.weightConstraint())
+    
+        train_loss /= len(dataloader)
+        train_losses.append(train_loss)
+        
+        try:
+            dataset_name = dataloader.dataset.dataset_name
+        except:
+            dataset_name = dataloader.dataset.dataset.dataset_name
+
+        # Save checkpoint
+        utils.save_model(model, optimizer, directory=directory, name=f"{model.__class__.__name__}_Basic_{dataset_name}", epoch=epoch)
+            
+    return e_hat, a_hat, train_losses
+    
 class SupervisedTrainer():
     """
     Defines a supervised training method
@@ -63,14 +114,7 @@ class SupervisedTrainer():
                 A = A.to(dev)
 
                 if self.patch_size is not None:
-                    k = int((Y.shape[2]**0.5)//self.patch_size)
-                    Y = Y.reshape(Y.shape[0], Y.shape[1], int(Y.shape[2]**0.5), int(Y.shape[2]**0.5))
-                    s = k*self.patch_size
-                    Y = Y[:, :, :s, :s]
-                    Y = Y.reshape(Y.shape[0], Y.shape[1], s**2)
-                    A = A.reshape(A.shape[0], A.shape[1], int(A.shape[2]**0.5), int(A.shape[2]**0.5))
-                    A = A[:, :, :s, :s]
-                    A = A.reshape(A.shape[0], A.shape[1], s**2)
+                    Y, A = utils.crop_patch_image(Y, self.patch_size, A)
 
                 A_init_disp = A.to(torch.float32)
                 E_init_disp = torch.ones(E.size(),dtype=torch.float32)
@@ -167,14 +211,7 @@ class ReconstructionError(SelfSupervisedTrainer):
                 A = A.to(dev)
 
                 if self.patch_size is not None:
-                    k = int((Y.shape[2]**0.5)//self.patch_size)
-                    Y = Y.reshape(Y.shape[0], Y.shape[1], int(Y.shape[2]**0.5), int(Y.shape[2]**0.5))
-                    s = k*self.patch_size
-                    Y = Y[:, :, :s, :s]
-                    Y = Y.reshape(Y.shape[0], Y.shape[1], s**2)
-                    A = A.reshape(A.shape[0], A.shape[1], int(A.shape[2]**0.5), int(A.shape[2]**0.5))
-                    A = A[:, :, :s, :s]
-                    A = A.reshape(A.shape[0], A.shape[1], s**2)
+                    Y, A = utils.crop_patch_image(Y, self.patch_size, A)
                 
                 A_init_disp = A.to(torch.float32)
                 E_init_disp = torch.ones(E.size(),dtype=torch.float32)
@@ -212,6 +249,95 @@ class ReconstructionError(SelfSupervisedTrainer):
             # Save checkpoint
             utils.save_model(self.model, self.optimizer, directory=directory, name=f"{self.__class__.__name__}_{dataset_name}", epoch=epoch)
                 
+        return e_hat, a_hat, train_losses
+      
+class UnDIP(SelfSupervisedTrainer):
+    """
+    Defines a Deep Image Prior-type of training based on Ulyanov et al. 2020.
+    We optimize the model to reconstruct the abundance maps from random noise (U(0,1)):
+    
+    y* = min_f || y_gt - E*f(z) ||
+
+    Args:
+        model: the model to train
+        load_checkpoint( str, optional): the path of the training checkpoint to be loaded (default: None)
+        criterion: the function to optimize by training the model, by default the MSE loss (default: None)
+        optimizer: the optimizer to use for the training, by default, we use AdamW (default: None)
+        wandb (bool, optional): whether to sync the training with wandb or not (default: True)
+    """
+    def __init__(self, model, patch_size=None, has_decoder=True, criterion=None, optimizer=None, scheduler=None, epochs=200, lr=0.001):
+        super().__init__()
+        self.model = model
+        self.patch_size = patch_size
+        self.has_decoder = has_decoder
+        self.epochs = epochs
+        self.lr = lr
+        
+        if optimizer is not None:
+            self.optimizer = optimizer
+        else:
+            self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=self.lr)
+        
+        if criterion is not None:
+            self.criterion = criterion
+        else:
+            self.criterion = nn.MSELoss()
+        
+        self.scheduler = None
+        if scheduler is not None:
+            self.scheduler = scheduler
+    
+    def train(self, dataloader, dev):
+            
+        train_losses = []
+        for epoch in range(self.epochs):
+            
+            train_loss = 0
+            
+            for Y, E, A in dataloader:
+                      
+                Y = Y.to(dev)
+                E = E.to(dev)
+                A = A.to(dev)
+
+                if self.patch_size is not None:
+                    Y, A = utils.crop_patch_image(Y, self.patch_size, A)
+
+                self.optimizer.zero_grad()
+                
+                z = torch.rand_like(Y) + 1e-7
+
+                A_init_disp = A.to(torch.float32)
+                E_init_disp = torch.ones(E.size(),dtype=torch.float32)
+                A_init = torch.ones_like(A_init_disp)
+                E_init = torch.ones_like(E_init_disp)
+
+                if self.has_decoder:
+                    e_hat, a_hat, y_hat = self.model(z)
+                else:
+                    e_hat, a_hat, y_hat = self.model(z, E_init=E_init, A_init=A_init)
+                
+                # loss = self.criterion(Y, y_hat)
+                loss = self.model.loss(Y, y_hat)
+                # train_losses.append(loss)
+                train_loss += loss.item()
+                
+                loss.backward()
+                self.optimizer.step()
+
+                if self.has_decoder:
+                    with torch.no_grad():
+                        self.model.decoder.apply(models.weightConstraint())
+            
+            if self.scheduler is not None:
+                self.scheduler.step()
+        
+            train_loss /= len(dataloader)
+            train_losses.append(train_loss)
+
+            # Save checkpoint
+            utils.save_model(self.model, self.optimizer, directory=directory, name=f"{self.__class__.__name__}_{dataloader.dataset.dataset_name}", epoch=epoch)
+            
         return e_hat, a_hat, train_losses
       
 class DIP(SelfSupervisedTrainer):
@@ -264,14 +390,7 @@ class DIP(SelfSupervisedTrainer):
                 A = A.to(dev)
 
                 if self.patch_size is not None:
-                    k = int((Y.shape[2]**0.5)//self.patch_size)
-                    Y = Y.reshape(Y.shape[0], Y.shape[1], int(Y.shape[2]**0.5), int(Y.shape[2]**0.5))
-                    s = k*self.patch_size
-                    Y = Y[:, :, :s, :s]
-                    Y = Y.reshape(Y.shape[0], Y.shape[1], s**2)
-                    A = A.reshape(A.shape[0], A.shape[1], int(A.shape[2]**0.5), int(A.shape[2]**0.5))
-                    A = A[:, :, :s, :s]
-                    A = A.reshape(A.shape[0], A.shape[1], s**2)
+                    Y, A = utils.crop_patch_image(Y, self.patch_size, A)
 
                 self.optimizer.zero_grad()
                 
@@ -386,14 +505,7 @@ class TwoStagesNet(SelfSupervisedTrainer):
                 A = A.to(dev)
 
                 if self.patch_size is not None:
-                    k = int((Y.shape[2]**0.5)//self.patch_size)
-                    Y = Y.reshape(Y.shape[0], Y.shape[1], int(Y.shape[2]**0.5), int(Y.shape[2]**0.5))
-                    s = k*self.patch_size
-                    Y = Y[:, :, :s, :s]
-                    Y = Y.reshape(Y.shape[0], Y.shape[1], s**2)
-                    A = A.reshape(A.shape[0], A.shape[1], int(A.shape[2]**0.5), int(A.shape[2]**0.5))
-                    A = A[:, :, :s, :s]
-                    A = A.reshape(A.shape[0], A.shape[1], s**2)
+                    Y, A = utils.crop_patch_image(Y, self.patch_size, A)
 
                 self.optimizer.zero_grad()
                 

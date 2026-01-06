@@ -220,14 +220,12 @@ class CNNAEU(nn.Module, HSUModel):
         B (int): the number of spectral bands
         c (int): the number of endmembers
     """
-    def __init__(self, B, c, scale=3.0):
+    def __init__(self, B, c, scale=3.0, dev="cpu"):
         super().__init__()
         self.B = B
         self.c = c
 
-        self.device = torch.device(
-            "cuda:0" if torch.cuda.is_available() else "cpu",
-        )
+        self.device = dev
 
         self.lrelu_params = {
             "negative_slope": 0.02,
@@ -291,7 +289,7 @@ class Transformer_AE(nn.Module, HSUModel):
         im_size (int): the height (or width) of the image (expects square image)
         patch_size (int, optional): how much to split the input image (default: 5)
     """
-    def __init__(self, B, c, im_size, patch_size=4e3, dim=24):
+    def __init__(self, B, c, im_size, patch_size=5, dim=24):
         super(Transformer_AE, self).__init__()
         self.B, self.c, self.im_size, self.dim, self.patch_size = B, c, im_size, dim, patch_size
         self.encoder = nn.Sequential(
@@ -362,11 +360,11 @@ class Transformer_AE(nn.Module, HSUModel):
         return e_est, abu_est, re_result
 
 class UnDIP(nn.Module, HSUModel):
-    def __init__(self, niters=3000, lr=0.001, exp_weight=0.99, noisy_input=True, kernel_size=3, dev="cpu"):
+    def __init__(self, B, c, kernel_size=3):
         super().__init__()
-
-        self.device = dev
-
+        self.B = B
+        self.c = c
+        
         self.kernel_sizes = [kernel_size] * 3 + [1] * 3
         self.strides = [2, 1, 1, 1, 1, 1]
         self.padding = [(k - 1) // 2 for k in self.kernel_sizes]
@@ -375,11 +373,8 @@ class UnDIP(nn.Module, HSUModel):
             "negative_slope": 0.1,
             "inplace": True,
         }
-
-        self.niters = niters
-        self.lr = lr
-        self.exp_weight = exp_weight
-        self.noisy_input = noisy_input
+        
+        self.init_architecture(seed=0)
 
     def init_architecture(self,seed):
         # Set random seed
@@ -387,7 +382,7 @@ class UnDIP(nn.Module, HSUModel):
         # MiSiCNet-like architecture
         self.layer1 = nn.Sequential(
             nn.ReflectionPad2d(self.padding[0]),
-            nn.Conv2d(self.L, 256, self.kernel_sizes[0], stride=self.strides[0]),
+            nn.Conv2d(self.B, 256, self.kernel_sizes[0], stride=self.strides[0]),
             nn.BatchNorm2d(256),
             nn.LeakyReLU(**self.lrelu_params),
         )
@@ -403,7 +398,7 @@ class UnDIP(nn.Module, HSUModel):
 
         self.layerskip = nn.Sequential(
             nn.ReflectionPad2d(self.padding[-1]),
-            nn.Conv2d(self.L, 4, self.kernel_sizes[-1], stride=self.strides[-1]),
+            nn.Conv2d(self.B, 4, self.kernel_sizes[-1], stride=self.strides[-1]),
             nn.BatchNorm2d(4),
             nn.LeakyReLU(**self.lrelu_params),
         )
@@ -425,21 +420,10 @@ class UnDIP(nn.Module, HSUModel):
 
         self.layer5 = nn.Sequential(
             nn.ReflectionPad2d(self.padding[4]),
-            nn.Conv2d(256, self.p, self.kernel_sizes[4], stride=self.strides[4]),
+            nn.Conv2d(256, self.c, self.kernel_sizes[4], stride=self.strides[4]),
         )
 
         self.softmax = nn.Softmax(dim=1)
-
-    @staticmethod
-    def loss(E_gt, E_hat, A_gt, A_hat, Y_gt, Y_hat):
-        pass
-
-    def forward(self, x):
-        x1 = self.upsample(self.layer2(self.layer1(x)))
-        xskip = self.layerskip(x)
-        xcat = self.custom_cat(x1, xskip)
-        out = self.softmax(self.layer5(self.layer4(self.layer3(xcat))))
-        return out
 
     @staticmethod
     def custom_cat(x1, xskip):
@@ -471,59 +455,22 @@ class UnDIP(nn.Module, HSUModel):
 
         return torch.cat(inputs_, dim=1)
 
-    def compute_abundances(self, Y, E, H, W, seed=0, *args, **kwargs):
-        tic = time.time()
+    @staticmethod
+    def loss(E_gt, E_hat, A_gt, A_hat, Y_gt, Y_hat):
+        mse = nn.MSELoss()
+        return mse(Y_gt, Y_hat)
 
-        L, N = Y.shape
-        L, p = E.shape
-        # Hyperparameters
-        self.L = L  # number of channels
-        self.p = p  # number of endmembers
-        self.H = H  # number of lines
-        self.W = W  # number of samples per line
-
-        self.init_architecture(seed=seed)
-        optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)
-
-        num_channels, h, w = self.L, self.H, self.W
-
-        Y = torch.Tensor(Y)
-        Y = Y.view(1, num_channels, h, w)
-
-        self = self.to(self.device)
-        Y = Y.to(self.device)
-        # TODO Investigate requires grad here
-        E = torch.Tensor(E).to(self.device)
-        E.requires_grad = False
-
-        noisy_input = torch.rand_like(Y) if self.noisy_input else Y
-
-        progress = tqdm(range(self.niters))
-        for ii in progress:
-            optimizer.zero_grad()
-
-            abund = self(noisy_input)
-
-            if ii == 0:
-                out_avg = abund.detach()
-            else:
-                out_avg = out_avg * self.exp_weight + abund.detach() * (
-                    1 - self.exp_weight
-                )
-
-            # Reshape data
-            loss = F.mse_loss(Y.view(-1, h * w), E @ abund.view(-1, h * w))
-
-            progress.set_postfix_str(f"loss={loss.item():.3e}")
-
-            loss.backward()
-            optimizer.step()
-
-        A = out_avg.cpu().numpy().reshape(-1, h * w)
-        self.time = time.time() - tic
-
-        return A
-
+    def forward(self, x):
+        x1 = self.upsample(self.layer2(self.layer1(x)))
+        xskip = self.layerskip(x)
+        xcat = self.custom_cat(x1, xskip)
+        a_hat = self.softmax(self.layer5(self.layer4(self.layer3(xcat))))
+        
+        e_hat = extractor.SiVM(x, self.c)
+        y_hat = e_hat @ a_hat
+        
+        return e_hat, a_hat, y_hat
+    
 """
 Unrolling
 """
@@ -628,7 +575,7 @@ class NALMU(nn.Module, HSUModel):
 
     @staticmethod
     def loss(E_gt, E_hat, A_gt, A_hat, Y_gt, Y_hat):
-        num_E = E_hat.shape[0]
+        num_E = E_hat.shape[2]
 
         if E_hat.dim() != 3:
             E_hat = E_hat.unsqueeze(0)
@@ -639,12 +586,15 @@ class NALMU(nn.Module, HSUModel):
         dict, _, Average_SAM = utils.order_endmembers(E_hat, E_gt)
         E_ordered = []
         A_ordered = []
-
+        
         for i in range(num_E):
-            E_ordered.append(E_hat[dict[i]])
-            A_ordered.append(A_hat[dict[i], :, :])
-        print(E_ordered, len(E_ordered))
-        E_ordered = torch.tensor(E_ordered)
+            E_ordered.append(E_hat[:, :, dict[i]])
+            A_ordered.append(A_hat[:, dict[i], :])
+        
+        E_ordered = torch.stack(E_ordered, dim=0)
+        E_ordered = E_ordered.reshape(E_ordered.shape[1], E_ordered.shape[2], E_ordered.shape[0])
+        A_ordered = torch.stack(A_ordered, dim=0)
+        A_ordered = A_ordered.reshape(A_ordered.shape[1], A_ordered.shape[0], A_ordered.shape[2])
         
         train_A = mse(A_gt,A_ordered)/(torch.norm(A_gt)**2)
         train_E = sad(E_gt,E_ordered)
@@ -737,7 +687,7 @@ class RALMU(nn.Module, HSUModel):
 
     @staticmethod
     def loss(E_gt, E_hat, A_gt, A_hat, Y_gt, Y_hat):
-        num_E = E_hat.shape[0]
+        num_E = E_hat.shape[2]
 
         if E_hat.dim() != 3:
             E_hat = E_hat.unsqueeze(0)
@@ -748,11 +698,15 @@ class RALMU(nn.Module, HSUModel):
         dict, _, Average_SAM = utils.order_endmembers(E_hat, E_gt)
         E_ordered = []
         A_ordered = []
-
+        
         for i in range(num_E):
-            E_ordered.append(E_hat[dict[i]])
-            A_ordered.append(A_hat[dict[i], :, :])
-        E_ordered = torch.tensor(E_ordered)
+            E_ordered.append(E_hat[:, :, dict[i]])
+            A_ordered.append(A_hat[:, dict[i], :])
+        
+        E_ordered = torch.stack(E_ordered, dim=0)
+        E_ordered = E_ordered.reshape(E_ordered.shape[1], E_ordered.shape[2], E_ordered.shape[0])
+        A_ordered = torch.stack(A_ordered, dim=0)
+        A_ordered = A_ordered.reshape(A_ordered.shape[1], A_ordered.shape[0], A_ordered.shape[2])
         
         train_A = mse(A_gt,A_ordered)/(torch.norm(A_gt)**2)
         train_E = sad(E_gt,E_ordered)
