@@ -25,7 +25,7 @@ N_WORKERS=$SLURM_CPUS_PER_TASK
 BATCH_SIZE=1
 PATCH_SIZE=5
 LR=0.00001
-EPOCHS=2000
+EPOCHS=1000
 N_XP=5
 
 # Execute the Python script with specific arguments

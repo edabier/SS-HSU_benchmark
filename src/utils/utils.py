@@ -186,31 +186,48 @@ def crop_patch_image(Y, patch_size, A=None):
     k = int((N**0.5)//patch_size)
     
     if batch is not None:
-        Y = Y.reshape(batch, B, int(N**0.5), int(N**0.5))
+        Y, _ = oneD_to_2d(Y)
         s = k*patch_size
         Y = Y[:, :, :s, :s]
         Y = Y.reshape(batch, B, s**2)
         
         if A is not None:
-            A = A.reshape(batch, A.shape[1], int(N**0.5), int(N**0.5))
+            A, _ = oneD_to_2d(A)
             A = A[:, :, :s, :s]
-            A = A.reshape(batch, A.shape[1], s**2)    
+            A = A.reshape(batch, A.shape[1], s**2)
             return Y, A
         else:
             return Y
     else:
-        Y = Y.reshape(B, int(N**0.5), int(N**0.5))
+        Y, _ = oneD_to_2d(Y)
         s = k*patch_size
         Y = Y[:, :s, :s]
         Y = Y.reshape(B, s**2)
         
         if A is not None:
-            A = A.reshape(A.shape[0], int(N**0.5), int(N**0.5))
+            A, _ = oneD_to_2d(A)
             A = A[:, :s, :s]
-            A = A.reshape(A.shape[0], s**2)    
+            A = A.reshape(A.shape[0], s**2)
             return Y, A
         else:
             return Y
+
+def oneD_to_2d(Y):
+    """
+    Reshapes 1D tensors to 2D image
+    
+    Args:
+        Y: input tensor to be reshaped
+    """
+    is_batched = Y.dim()==3
+    if is_batched:
+        batch, B, N = Y.shape
+        H = int(N**0.5)
+        return Y.reshape(batch, B, H, H), H
+    else:
+        B, N = Y.shape
+        H = int(N**0.5)
+        return Y.reshape(B, H, H), H
 
 def compute_metrics_and_plot(e_hat, e_gt, a_hat, a_gt, name=None, use_wandb=False):
     """

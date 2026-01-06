@@ -190,8 +190,7 @@ class CNNAE_linear(nn.Module, HSUModel):
             x = x.unsqueeze(0) # Add a batch dimension for inference
             
         batch, B, N = x.shape
-        h = int(N**0.5)
-        x = x.reshape(batch, B, h, h)
+        x, _ = utils.oneD_to_2d(x)
         
         code = self.encoder(x)
         
@@ -201,11 +200,6 @@ class CNNAE_linear(nn.Module, HSUModel):
         
         x_hat_flat = self.decoder(abund_flat)  # (batch*N, B)
         x_hat = x_hat_flat.reshape(batch, N, B).permute(0, 2, 1)  # (batch, B, N)
-        # a_hat = abund.reshape(batch, self.c, N)
-        # abund = abund.reshape(batch, -1)
-        
-        # x_hat = self.decoder(abund)
-        # x_hat = x_hat.reshape(batch, B, N)
         
         Ws = [m.weight.clone() for m in self.decoder if isinstance(m, nn.Linear)]
         e_hat = torch.linalg.multi_dot(Ws[::-1])
@@ -265,8 +259,7 @@ class CNNAEU(nn.Module, HSUModel):
             x = x.unsqueeze(0) # Add a batch dimension for inference
         
         batch, B, N = x.shape
-        h = int(N**0.5)
-        x = x.reshape(batch, B, h, h)
+        x, _ = utils.oneD_to_2d(x)
         
         code = self.encoder(x)
         
@@ -341,8 +334,7 @@ class Transformer_AE(nn.Module, HSUModel):
             x = x.unsqueeze(0) # Add a batch dimension for inference
 
         batch, patch, N = x.shape
-        h = int(N**0.5)
-        x = x.reshape(batch, patch, h, h)
+        x, _ = utils.oneD_to_2d(x)
         # print(x.shape, h)
 
         abu_est = self.encoder(x)
@@ -458,15 +450,39 @@ class UnDIP(nn.Module, HSUModel):
     @staticmethod
     def loss(E_gt, E_hat, A_gt, A_hat, Y_gt, Y_hat):
         mse = nn.MSELoss()
-        return mse(Y_gt, Y_hat)
+
+        dict, _, _ = utils.order_endmembers(E_hat, E_gt)
+        E_ordered = []
+        
+        for i in range(E_gt.shape[2]):
+            E_ordered.append(E_hat[:, :, dict[i]])
+        
+        E_ordered = torch.stack(E_ordered, dim=0)
+        E_ordered = E_ordered.reshape(E_ordered.shape[1], E_ordered.shape[2], E_ordered.shape[0])
+        
+        return mse(E_gt, E_ordered)
 
     def forward(self, x):
+
+        if x.dim() < 3:
+            x = x.unsqueeze(0) # Add a batch dimension for inference
+
+        batch, B, N = x.shape
+        x, _ = utils.oneD_to_2d(x)
+        
         x1 = self.upsample(self.layer2(self.layer1(x)))
         xskip = self.layerskip(x)
         xcat = self.custom_cat(x1, xskip)
         a_hat = self.softmax(self.layer5(self.layer4(self.layer3(xcat))))
+        a_hat = a_hat.reshape(batch, a_hat.shape[1], N)
         
-        e_hat = extractor.SiVM(x, self.c)
+        x_flat = x.reshape(batch, B, N)
+
+        e_hat = []
+        for b in range(batch):
+            e_hat.append(extractor.SiVM(x_flat[b], self.c))
+        e_hat = torch.stack(e_hat, dim=0)
+
         y_hat = e_hat @ a_hat
         
         return e_hat, a_hat, y_hat
