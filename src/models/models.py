@@ -13,6 +13,10 @@ import src.utils.utils as utils
 class HSUModel():
     def __init__(self):
         pass
+
+    @staticmethod
+    def loss(E_gt, E_hat, A_gt, A_hat, Y_gt, Y_hat):
+        raise NotImplementedError(f"Loss function not defined")
     
     def forward(self, x):
         """
@@ -274,7 +278,7 @@ class CNNAEU(nn.Module, HSUModel):
         
         return e_hat, a_hat, x_hat
 
-class Transformer_AE(nn.Module, HSUModel):
+class DeepTrans(nn.Module, HSUModel):
     """
     Args:
         B (int): the number of spectral bands
@@ -283,7 +287,7 @@ class Transformer_AE(nn.Module, HSUModel):
         patch_size (int, optional): how much to split the input image (default: 5)
     """
     def __init__(self, B, c, im_size, patch_size=5, dim=24):
-        super(Transformer_AE, self).__init__()
+        super(DeepTrans, self).__init__()
         self.B, self.c, self.im_size, self.dim, self.patch_size = B, c, im_size, dim, patch_size
         self.encoder = nn.Sequential(
             nn.Conv2d(B, 128, kernel_size=(1, 1), stride=(1, 1), padding=(0, 0)),
@@ -321,7 +325,7 @@ class Transformer_AE(nn.Module, HSUModel):
 
     @staticmethod
     def loss(E_gt, E_hat, A_gt, A_hat, Y_gt, Y_hat, alpha=4e3, beta=5e-2):
-        mse = nn.MSELoss(reduction="mean")
+        mse = nn.MSELoss(reduction="sum")
         sad = utils.SADLoss()
 
         loss_re = alpha * mse(Y_gt, Y_hat)
@@ -449,18 +453,22 @@ class UnDIP(nn.Module, HSUModel):
 
     @staticmethod
     def loss(E_gt, E_hat, A_gt, A_hat, Y_gt, Y_hat):
-        mse = nn.MSELoss()
+        mse = nn.MSELoss(reduction="sum")
 
-        dict, _, _ = utils.order_endmembers(E_hat, E_gt)
-        E_ordered = []
+        # dict, _, _ = utils.order_endmembers(E_hat, E_gt)
+        # E_ordered = []
         
-        for i in range(E_gt.shape[2]):
-            E_ordered.append(E_hat[:, :, dict[i]])
+        # for i in range(E_gt.shape[2]):
+        #     E_ordered.append(E_hat[:, :, dict[i]])
         
-        E_ordered = torch.stack(E_ordered, dim=0)
-        E_ordered = E_ordered.reshape(E_ordered.shape[1], E_ordered.shape[2], E_ordered.shape[0])
+        # E_ordered = torch.stack(E_ordered, dim=0)
+        # E_ordered = E_ordered.reshape(E_ordered.shape[1], E_ordered.shape[2], E_ordered.shape[0])
         
-        return mse(E_gt, E_ordered)
+        # Y_pred = E_ordered @ A_hat
+        # loss1 = mse(Y_gt, Y_pred)
+        loss2 = mse(Y_gt, Y_hat)
+
+        return loss2
 
     def forward(self, x):
 
@@ -599,7 +607,7 @@ class NALMU(nn.Module, HSUModel):
         sad = utils.SADLoss()
         mse = nn.MSELoss(reduction='sum')
 
-        dict, _, Average_SAM = utils.order_endmembers(E_hat, E_gt)
+        dict, _, _ = utils.order_endmembers(E_hat, E_gt)
         E_ordered = []
         A_ordered = []
         
@@ -657,6 +665,7 @@ class NALMU(nn.Module, HSUModel):
             
         E_est = E_pred_tab[-1]
         A_est = A_pred_tab[-1]
+
         X_reconstruct = E_est @ A_est
 
         return E_est, A_est, X_reconstruct
@@ -711,7 +720,7 @@ class RALMU(nn.Module, HSUModel):
         sad = utils.SADLoss()
         mse = nn.MSELoss(reduction='sum')
 
-        dict, _, Average_SAM = utils.order_endmembers(E_hat, E_gt)
+        dict, _, _ = utils.order_endmembers(E_hat, E_gt)
         E_ordered = []
         A_ordered = []
         

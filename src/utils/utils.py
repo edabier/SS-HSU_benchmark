@@ -12,6 +12,7 @@ import os
 import wandb
 from io import BytesIO
 from PIL import Image
+from scipy.optimize import linear_sum_assignment
 
 # class SADLoss(nn.Module):
 #     """
@@ -25,9 +26,9 @@ from PIL import Image
 #         predictions_norm = normalize(predictions,p=2.0,dim=1)
 #         matConfusion = torch.bmm(torch.transpose(targets_norm, 1, 2),predictions_norm)
         
-#         diagBatch = torch.diagonal(matConfusion,dim1=1,dim2=2) # Prend la diagonale pour chaque mini-batch
+#         diagBatch = torch.diagonal(matConfusion,dim1=1,dim2=2)
         
-#         return -torch.sum(diagBatch)/(targets.size()[0]*targets.size()[2]) # Independant de la taille des mini-batchs et du nombre de sources
+#         return -torch.sum(diagBatch)/(targets.size()[0]*targets.size()[2])
 
 # class SADTrans(nn.Module):
 #     def __init__(self, num_bands):
@@ -49,23 +50,6 @@ from PIL import Image
 
 #         return angle
 
-# class SADLoss(nn.Module):
-#     """
-#     SAD loss function for EndMember matrices. To use it on Abundances, transpose the two inputs. (Doesn't correct permutations)
-#     """
-#     def __init__(self):
-#         super(SADLoss, self).__init__()
-
-#     def forward(self, y_true, y_pred):
-#         y_true = torch.nn.functional.normalize(y_true, dim=1, p=2)
-#         y_pred = torch.nn.functional.normalize(y_pred, dim=1, p=2)
-
-#         A = torch.mul(y_true, y_pred)
-#         A = torch.sum(A, dim=1)
-#         sad = torch.acos(A)
-#         loss = torch.mean(sad)
-#         return torch.cos(loss)
-
 class SADLoss(nn.Module):
     """
     SAD loss function for EndMember matrices. To use it on Abundances, transpose the two inputs. (Doesn't correct permutations)
@@ -74,19 +58,36 @@ class SADLoss(nn.Module):
         super(SADLoss, self).__init__()
 
     def forward(self, y_true, y_pred):
+        y_true = torch.nn.functional.normalize(y_true, dim=1, p=2)
+        y_pred = torch.nn.functional.normalize(y_pred, dim=1, p=2)
 
-        assert y_true.shape == y_pred.shape
+        A = torch.mul(y_true, y_pred)
+        A = torch.sum(A, dim=1)
+        sad = torch.acos(A)
+        loss = torch.mean(sad)
+        return loss
 
-        dot_product = (y_true * y_pred).sum(dim=1)
-        target_norm = y_true.norm(dim=1)
-        output_norm = y_pred.norm(dim=1)
-        sad_score = torch.clamp(dot_product / (target_norm * output_norm), -1, 1).acos()
-        return sad_score.mean()
+# class SADLoss(nn.Module):
+#     """
+#     SAD loss function for EndMember matrices. To use it on Abundances, transpose the two inputs. (Doesn't correct permutations)
+#     """
+#     def __init__(self):
+#         super(SADLoss, self).__init__()
+
+#     def forward(self, y_true, y_pred):
+
+#         assert y_true.shape == y_pred.shape
+
+#         dot_product = (y_true * y_pred).sum(dim=1)
+#         target_norm = y_true.norm(dim=1)
+#         output_norm = y_pred.norm(dim=1)
+#         sad_score = torch.clamp(dot_product / (target_norm * output_norm), -1, 1).acos()
+#         return sad_score.mean()
 
 def numpy_SAD(y_true, y_pred):
     return np.cos(np.arccos(np.dot(y_pred, y_true) / (np.linalg.norm(y_true) * np.linalg.norm(y_pred))))
 
-def alter_MSE(y_true, y_pred):
+def numpy_alter_MSE(y_true, y_pred):
     num_em = y_true.shape[0]
     y_true = np.reshape(y_true , [num_em, -1])
     y_pred = np.reshape(y_pred , [num_em, -1])
@@ -97,6 +98,15 @@ def alter_MSE(y_true, y_pred):
     Average_mse = np.sum(mse) / len(mse)
     mse = np.insert(mse, num_em, Average_mse, axis=0)
     return mse
+
+def alter_MSE(y_true, y_pred):
+    y_true = y_true.reshape(y_true.shape[0], -1)
+    y_pred = y_pred.reshape(y_pred.shape[0], -1)
+    mse = torch.mean((y_pred - y_true) ** 2, dim=1)
+    Average_mse = torch.mean(mse)
+    mse_with_avg = torch.cat([mse, Average_mse.unsqueeze(0)])
+
+    return mse_with_avg
    
 def numpy_order_endmembers(endmembers, endmembersGT):
     num_endmembers = endmembers.shape[0]
@@ -104,11 +114,11 @@ def numpy_order_endmembers(endmembers, endmembersGT):
     SAD_ = []
     sad_mat = np.ones((num_endmembers, num_endmembers))
     for i in range(num_endmembers):
-        endmembers[i, :] = endmembers[i, :] / endmembers[i, :].max()
-        endmembersGT[i, :] = endmembersGT[i, :] / endmembersGT[i, :].max()
+        endmembers[:,i] = endmembers[:,i] / endmembers[:,i].max()
+        endmembersGT[:,i] = endmembersGT[:,i] / endmembersGT[:,i].max()
     for i in range(num_endmembers):
         for j in range(num_endmembers):
-            sad_mat[i, j] = numpy_SAD(endmembers[i, :], endmembersGT[j, :])
+            sad_mat[i, j] = numpy_SAD(endmembers[i,:], endmembersGT[j, :])
     rows = 0
     while rows < num_endmembers:
         minimum = sad_mat.min()
@@ -130,6 +140,11 @@ def numpy_order_endmembers(endmembers, endmembersGT):
     return dict, SAD_, Average_SAM
 
 def order_endmembers(endmembers, endmembersGT):
+    if endmembers.dim() != 3:
+        endmembers = endmembers.unsqueeze(0)
+    if endmembersGT.dim() != 3:
+        endmembersGT = endmembersGT.unsqueeze(0)
+
     num_endmembers = endmembers.shape[2]
     device = endmembers.device
     dict = {}
@@ -144,8 +159,9 @@ def order_endmembers(endmembers, endmembersGT):
     # Compute SAD matrix
     for i in range(num_endmembers):
         for j in range(num_endmembers):
-            sad_mat[i, j] = sad(endmembersGT[:, i, :].unsqueeze(0), endmembers[:, i, :].unsqueeze(0))
-    
+            # sad_mat[i, j] = sad(endmembersGT[:, :,i].unsqueeze(0), endmembers[:, :,i].unsqueeze(0))
+            sad_mat[i, j] = sad(endmembersGT[:, :,i], endmembers[:, :,j])
+
     rows = 0
     while rows < num_endmembers:
         minimum = sad_mat.min()
@@ -166,6 +182,44 @@ def order_endmembers(endmembers, endmembersGT):
     Average_SAM = SAD_.sum() / len(SAD_)
 
     return dict, SAD_, Average_SAM
+
+def order_abundances(A_hat, A_gt):
+    """
+    Find the reorganizing order of abundances by endmember minimizing the mse with the ground truth
+
+
+    """
+    if A_hat.dim() == 4:
+        A_hat = A_hat.squeeze(0)
+        A_gt = A_gt.squeeze(0)
+
+    c, H, W = A_hat.shape
+    device = A_hat.device
+
+    # Flatten spatial dimensions for MSE computation
+    A_hat_flat = A_hat.reshape(c, -1)  # (B, c, H*W)
+    A_gt_flat = A_gt.reshape(c, -1)  # (B, c, H*W)
+
+    # Compute MSE matrix (B, c, c)
+    mse_mat = torch.zeros((c, c), device=device)
+    for i in range(c):
+        for j in range(c):
+            mse_mat[i, j] = torch.nn.functional.mse_loss(
+                A_hat_flat[i], A_gt_flat[j], reduction="sum"
+            )
+
+    # Use Hungarian algorithm to find optimal assignment
+    row_ind, col_ind = linear_sum_assignment(mse_mat.cpu().numpy())
+    mapping = {row: col for row, col in zip(row_ind, col_ind)}
+
+    # Store MSE values for matched pairs
+    mse_values = [mse_mat[i, j].item() for i, j in zip(row_ind, col_ind)]
+    # print(sum(mse) for mse in mse_values)
+
+    # Compute average MSE
+    avg_mse = sum(mse_values) / c
+
+    return mapping, mse_values, avg_mse
 
 def crop_patch_image(Y, patch_size, A=None):
     """
@@ -233,52 +287,53 @@ def compute_metrics_and_plot(e_hat, e_gt, a_hat, a_gt, name=None, use_wandb=Fals
     """
     Computes the SAD of predicted E and MSE of predicted A
     """
-    
-    e_hat = e_hat.T
-    e_gt = e_gt.T
+    sad = SADLoss()
 
-    num_E = e_hat.shape[0]
+    num_E = e_hat.shape[-1]
     n = num_E // 2
     if num_E % 2 != 0: n = n + 1
 
-    dict, _, Average_SAM = numpy_order_endmembers(e_hat.detach().cpu().numpy(), e_gt.detach().cpu().numpy())
+    # dict, _, Average_SAM = order_endmembers(e_hat, e_gt)
+    dict, _, Average_SAM = order_abundances(a_hat, a_gt)
     sad_ordered = []
-    endmember_ordered = []
-    abundance_ordered = []
+    E_ordered = []
+    A_ordered = []
 
     fig = plt.figure(num=1, figsize=(8, 8))
     plt.clf()
-    title = f"{name} aSAM score for all E: " + format(Average_SAM, '.3f') + " radians"
+    title = f"{name} aSAM score for all E: " + format(Average_SAM, '.5f') + " radians"
     st = plt.suptitle(title)
-    for i in range(num_E):
-        e_hat[i, :] = e_hat[i, :] / e_hat[i, :].max()
-        e_gt[i, :] = e_gt[i, :] / e_gt[i, :].max()
+
+    e_hat = e_hat/ e_hat.max(dim=0, keepdim=True).values
+    e_gt = e_gt/ e_gt.max(dim=0, keepdim=True).values
 
     for i in range(num_E):
-        endmember_ordered.append(e_hat[dict[i]].detach().cpu().numpy())
-        abundance_ordered.append(a_hat[dict[i], :, :].detach().cpu().numpy())
-    endmember_ordered = np.array(endmember_ordered)
+        E_ordered.append(e_hat[:, dict[i]])
+        A_ordered.append(a_hat[dict[i],:, :])
+
+    E_ordered = torch.stack(E_ordered, dim=1)
+    A_ordered = torch.stack(A_ordered, dim=0)
+
     for i in range(num_E):
-        z = numpy_SAD(endmember_ordered[i], e_gt[i, :].detach().cpu().numpy())
+        z = sad(e_gt, E_ordered)
         sad_ordered.append(z)
 
     for i in range(num_E):
         ax = plt.subplot(2, n, i + 1)
-        plt.plot(e_gt[i, :].detach().cpu(), 'r', linewidth=1.0, label='GT')
-        plt.plot(endmember_ordered[i, :], 'k-', linewidth=1.0, label='predict')
+        plt.plot(e_gt[:, i].detach().cpu(), 'r', linewidth=1.0, label='GT')
+        plt.plot(E_ordered[:, i].detach().cpu(), 'k-', linewidth=1.0, label='predict')
         plt.legend()
-        ax.set_title("SAD: " + format(sad_ordered[i], '.4f'))
+        ax.set_title("SAD: " + format(sad_ordered[i], '.5f'))
         ax.get_xaxis().set_visible(False)
         
-    sad_ordered.append(Average_SAM)
-    sad_ordered = np.array(sad_ordered)
+    # sad_ordered.append(Average_SAM)
+    sad_ordered = torch.stack(sad_ordered)
 
-    abundance_ordered = np.array(abundance_ordered)
-
-    mse = alter_MSE(a_gt.detach().cpu().numpy(), abundance_ordered)
+    # mse = alter_MSE(a_gt.detach().cpu().numpy(), A_ordered.cpu().numpy())
+    mse = alter_MSE(a_gt, A_ordered)
 
     plt.tight_layout()
-    st.set_y(0.95)
+    # st.set_y(0.95)
     fig.subplots_adjust(top=0.88)
     plt.draw()
     plt.pause(0.001)
@@ -523,21 +578,25 @@ def save_model(model, optimizer, directory, name, epoch, is_permanent=False):
     """
     Overwrite the previous checkpoint save if not is_permanent, otherwise, saves a new version of the model
     """
+    model_name = model.__class__.__name__
+    if model_name == "NALMU" or model_name == "RALMU":
+        model_name += str(model.T)
+
     if is_permanent:
         # Save a permanent copy of the model
         torch.save({
             'epoch': epoch,
             'model_state_dict': model.state_dict(),
             'optimizer_state_dict': optimizer.state_dict()
-        }, os.path.join(directory, f'{model.__class__.__name__}_{name}_lr_{optimizer.param_groups[-1]["lr"]}_epoch_{epoch}.pt'))
-        print(f'Saved permanent model {model.__class__.__name__}_{name}_lr_{optimizer.param_groups[-1]["lr"]}_epoch_{epoch}.pt')
+        }, os.path.join(directory, f'{model_name}_{name}_lr_{optimizer.param_groups[-1]["lr"]}_epoch_{epoch}.pt'))
+        print(f'Saved permanent model {model_name}_{name}_lr_{optimizer.param_groups[-1]["lr"]}_epoch_{epoch}.pt')
     else:
         # Overwrite the temporary model save
         torch.save({
             'epoch': epoch,
             'model_state_dict': model.state_dict(),
             'optimizer_state_dict': optimizer.state_dict(),
-        }, os.path.join(directory, f'{model.__class__.__name__}_{name}_lr_{optimizer.param_groups[-1]["lr"]}.pt'))
+        }, os.path.join(directory, f'{model_name}_{name}_lr_{optimizer.param_groups[-1]["lr"]}.pt'))
         # print("Saved checkpoint model")
         
 def load_checkpoint(path, model, optimizer):

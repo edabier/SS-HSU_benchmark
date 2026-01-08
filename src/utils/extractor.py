@@ -397,7 +397,7 @@ def FCLS_2(Y, E, A0=None, inner_iter=300, delta=1e-6, alpha0=0.05):
 
     return A
 
-def unmix(y, c):
+def unmix(y, c, use_sivm=False):
     """
     Unmixes the input HSI y into c endmembers by applying VCA + FCLS
     
@@ -406,7 +406,10 @@ def unmix(y, c):
         c (int): the number of endmembers to unmix
     """
     
-    E = VCA(y, c)
+    if use_sivm:
+        E = SiVM(y, c)
+    else:
+        E = VCA(y, c)
     A = FCLS(y, E)
     
     return E, A

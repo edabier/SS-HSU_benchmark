@@ -2,7 +2,7 @@
 #SBATCH --job-name=fill_table
 #SBATCH --output=%x_%j.out      # %x for job name, %j for job ID
 #SBATCH --error=%x_%j.err
-#SBATCH -p V100-32GB
+#SBATCH -p A100#V100-32GB
 #SBATCH --nodes=1
 #SBATCH --mem=30G
 #SBATCH --exclude=node42,node43
@@ -24,8 +24,8 @@ conda activate hsu-env
 N_WORKERS=$SLURM_CPUS_PER_TASK
 BATCH_SIZE=1
 PATCH_SIZE=5
-LR=0.00001
-EPOCHS=1000
+LR=0.00001 #0.003
+EPOCHS=3000 #320
 N_XP=5
 
 # Execute the Python script with specific arguments

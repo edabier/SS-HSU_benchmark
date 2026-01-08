@@ -14,9 +14,12 @@ import src.models.models as models
 directory = "/home/ids/edabier/HSU/SS-HSU_benchmark/models"
 # directory = "models/"
 
-def train(model, dataloader, patch_size, has_decoder=True, epochs=320, lr=0.003, dev="cpu"):
+def train(model, dataloader, patch_size=None, has_decoder=True, epochs=320, lr=0.003, dev="cpu"):
+    model_name = model.__class__.__name__
+    if model_name == "NALMU" or model_name == "RALMU":
+        model_name += str(model.T)
+
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
-            
     train_losses = []
     for epoch in range(epochs):
         
@@ -29,18 +32,18 @@ def train(model, dataloader, patch_size, has_decoder=True, epochs=320, lr=0.003,
             E = E.to(dev)
             A = A.to(dev)
 
-            if patch_size is not None:
+            if model_name == "DeepTrans":
                 Y, A = utils.crop_patch_image(Y, patch_size, A)
 
             A_init_disp = A.to(torch.float32)
             E_init_disp = torch.ones(E.size(),dtype=torch.float32)
             A_init = torch.ones_like(A_init_disp)
             E_init = torch.ones_like(E_init_disp)
-
-            if has_decoder:
-                e_hat, a_hat, y_hat = model(Y)
-            else:
+            
+            if "NALMU" in model_name or "RALMU" in model_name:
                 e_hat, a_hat, y_hat = model(Y, E_init=E_init, A_init=A_init)
+            else:
+                e_hat, a_hat, y_hat = model(Y)
 
             loss = model.loss(E, e_hat, A, a_hat, Y, y_hat)
             train_loss += loss.item()
@@ -61,7 +64,7 @@ def train(model, dataloader, patch_size, has_decoder=True, epochs=320, lr=0.003,
             dataset_name = dataloader.dataset.dataset.dataset_name
 
         # Save checkpoint
-        utils.save_model(model, optimizer, directory=directory, name=f"{model.__class__.__name__}_Basic_{dataset_name}", epoch=epoch)
+        utils.save_model(model, optimizer, directory=directory, name=f"Basic_{dataset_name}", epoch=epoch)
             
     return e_hat, a_hat, train_losses
     

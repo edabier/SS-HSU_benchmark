@@ -2,6 +2,7 @@ import torch.nn as nn
 import torch
 import sys
 import argparse
+import os
 
 global_path = "/home/ids/edabier/HSU"
 sys.path.append(global_path)
@@ -17,6 +18,9 @@ from HyperFree import build_HyperFree_vit_b, predictor
 sys.path.append(f"{global_path}/DOFA")
 from dofa_v1 import vit_base_patch16
 
+sys.path.append(f"{global_path}/HyperSIGMA/HyperspectralUnmixing")
+from models.model import HyperSIGMA_Unmix
+
 if torch.cuda.is_available():
     dev = "cuda:0"
     torch.set_default_device(dev)
@@ -26,7 +30,7 @@ else:
 
 
 class FoundationModel():
-    def __init__(self, model_name, patch_size=None, im_size=None, channels=None):
+    def __init__(self, model_name, patch_size=None, im_size=None, channels=None, n_em=None):
         """
         Instantiate the provided foundation model
         """
@@ -47,19 +51,21 @@ class FoundationModel():
 
             self.model = model
             self.im_size = 128
+            self.encoder = None
+            self.decoder = Decoder(n_em, channels)
 
-        elif model_name == "SpectralGPT":
-            assert channels is not None, "The number of channels must be specified for SpectralGPT"
-            state_dict = torch.load(f"{global_path}/IEEE_TPAMI_SpectralGPT/data/SpectralGPT+.pth", map_location=dev, weights_only=False)["model"]
-            self.im_size = 128
-            spectral_gpt = models_mae_spectral.mae_vit_base_patch8_128(num_frames=channels, pred_t_dim=channels)
-            # state_dict = checkpoint["model"] if "model" in checkpoint else checkpoint
-            # spectral_gpt.load_state_dict(state_dict, strict=False)
-            encoder_keys = [k for k in state_dict.keys() if k.startswith('patch_embed') or k.startswith('blocks') or k.startswith('norm')]
-            encoder_state_dict = {k: state_dict[k] for k in encoder_keys}
-            spectral_gpt.load_state_dict(encoder_state_dict, strict=False)
+        # elif model_name == "SpectralGPT":
+            # assert channels is not None, "The number of channels must be specified for SpectralGPT"
+            # state_dict = torch.load(f"{global_path}/IEEE_TPAMI_SpectralGPT/data/SpectralGPT+.pth", map_location=dev, weights_only=False)["model"]
+            # self.im_size = 128
+            # spectral_gpt = models_mae_spectral.mae_vit_base_patch8_128(num_frames=channels, pred_t_dim=channels)
+            # # state_dict = checkpoint["model"] if "model" in checkpoint else checkpoint
+            # # spectral_gpt.load_state_dict(state_dict, strict=False)
+            # encoder_keys = [k for k in state_dict.keys() if k.startswith('patch_embed') or k.startswith('blocks') or k.startswith('norm')]
+            # encoder_state_dict = {k: state_dict[k] for k in encoder_keys}
+            # spectral_gpt.load_state_dict(encoder_state_dict, strict=False)
                         
-            self.model = spectral_gpt
+            # self.model = spectral_gpt
             
         elif model_name == "DOFA":
             state_dict = torch.load("/home/ids/edabier/HSU/DOFA/checkpoints/DOFA_ViT_base_e100.pth", map_location=dev)
@@ -67,6 +73,9 @@ class FoundationModel():
             model = vit_base_patch16()
             model.load_state_dict(state_dict, strict=False)
             self.model = model
+            
+            self.encoder = None
+            self.decoder = Decoder(n_em, channels)
 
         elif model_name == "HyperFree":
             assert self.patch_size is not None, "Patch_size must be set"
@@ -78,8 +87,52 @@ class FoundationModel():
         elif model_name == "HyperSL":
             pass
 
-        elif model_name == "HyperSigma":
-            pass
+        elif model_name == "HyperSIGMA":
+            assert channels is not None, "The number of channels must be specified for HyperSIGMA"
+            assert n_em is not None, "The number of endmembers must be specified for HyperSIGMA"
+
+            parser = argparse.ArgumentParser()
+            parser.add_argument('--patch_size', default=64)
+            parser.add_argument('--seg_patches', default=2)
+            parser.add_argument('--embed_dim', default=768)
+            parser.add_argument('--NUM_TOKENS', default=64)
+            parser.add_argument('--channels', default=channels)
+            parser.add_argument('--num_em', default=n_em)
+            parser.add_argument('--kernel', default=1)
+            parser.add_argument('--scale', default=1, type=float)
+            args, _ = parser.parse_known_args()
+
+            model = HyperSIGMA_Unmix(args)
+
+            Spat_pernet = torch.load("/home/ids/edabier/HSU/HyperSIGMA/HyperspectralUnmixing/data/spat-vit-base-ultra-checkpoint-1599.pth", map_location=torch.device('cpu'), weights_only=False)
+            Spat_pernet = Spat_pernet['model']
+            for k in list(Spat_pernet.keys()):
+                if 'patch_embed.proj' in k:
+                    del Spat_pernet[k]
+            for k in list(Spat_pernet.keys()):
+                k_ = 'spat_encoder.' + k
+                Spat_pernet[k_] = Spat_pernet.pop(k)
+
+            Spec_pernet = torch.load("/home/ids/edabier/HSU/HyperSIGMA/HyperspectralUnmixing/data/spec-vit-base-ultra-checkpoint-1599.pth", map_location=torch.device('cpu'), weights_only=False)
+            Spec_pernet = Spec_pernet['model']
+            for k in list(Spec_pernet.keys()):
+                if 'spec' in k:
+                    del Spec_pernet[k]
+                if 'spat' in k:
+                    del Spec_pernet[k]
+            for k in list(Spec_pernet.keys()):
+                k_ = 'spec_encoder.' + k
+                Spec_pernet[k_] = Spec_pernet.pop(k)
+
+            model_params = model.state_dict()
+            same_parsms = {k: v for k, v in Spat_pernet.items() if k in model_params.keys()}
+            model_params.update(same_parsms)
+            model.load_state_dict(model_params)
+
+            same_parsms = {k: v for k, v in Spec_pernet.items() if k in model_params.keys()}
+            model_params.update(same_parsms)
+            model.load_state_dict(model_params)
+            self.model = model
         
     def create_decoder(self, c, B):
         self.decoder = Decoder(c, B)
@@ -99,6 +152,7 @@ class FoundationModel():
             Y = Y.unsqueeze(0)
         else:
             print("Input HSI must be of shape (B, H, W) or (batch, B, H, W)")
+            return
         
         if H > self.im_size:
             print(f"Input HSI larger than expected size ({self.im_size}), cutting it to match")
@@ -120,22 +174,49 @@ class FoundationModel():
             return self.model.features
         
         elif self.model_name == "DOFA":
-            assert wavelengths is not None, "DOFA needs wavelengths list for [?]"
-            return self.model.forward_features(Y, wave_lists=wavelengths) 
+            assert wavelengths is not None, "DOFA needs wavelengths list for the positional encoding"
+            return self.model.forward_features(Y, wave_list=wavelengths) 
         
         elif self.model_name == "SpectralEarth":
             return self.model(Y)
         
+        elif self.model_name == "HyperSIGMA":
+            features = self.model.forward_fusion(Y)
+            return features
+        
         else:
             pass
     
-    def get_abundances(self, F):
-        # TO DO: define a method to eYtract A from features F
+    def get_abundances(self, F, c, N):
+        # TO DO: define a method to extract A from features F
+
+        if self.model_name == "SpectralEarth" or self.model_name == "DOFA":
+            A_hat = torch.rand(c, )
+
         pass
 
-    def unmix(self, Y):
+    def unmix(self, Y, c):
+        """
+        Unmix the input HSI by extracting features using the rsfm, and using them to obtain abundances and endmembers
+
+        Args:
+            Y: input HSI tensor of shape (batch, B, H, W) or (B, H, W)
+            c: the number of endmembers to unmix
+        """
+        if Y.dim() == 4:
+            batch, B, H, W = Y.shape
+        elif Y.dim() == 3:
+            B, H, W = Y.shape
+            Y = Y.unsqueeze(0)
+        else:
+            print("Input HSI must be of shape (B, H, W) or (batch, B, H, W)")
+            return 
+        
+        # if not hasattr(self, 'decoder'):
+        #     self.create_decoder(c, B)
+
         F = self.get_features(Y)
-        A = self.get_abundances(F)
+        A = self.get_abundances(F, c, H*W)
         Y_hat = self.decoder(A)
         E = self.decoder.get_endmembers()
 
