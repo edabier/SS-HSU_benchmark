@@ -148,40 +148,58 @@ def numpy_order_endmembers(endmembers, endmembersGT):
     Average_SAM = np.sum(SAD_)/ len(SAD_)
     return dict, SAD_, Average_SAM
 
-def order_endmembers(E_hat, E_gt):
-
+def order_endmembers(E_gt, E_hat, A_hat=None):
+    if E_hat.dim() == 2:
+        E_hat = E_hat.unsqueeze(0)
+    if E_gt.dim() == 2:
+        E_gt = E_gt.unsqueeze(0)
+        
+    if A_hat is not None:
+        if A_hat.dim() == 3:
+            A_hat = A_hat.unsqueeze(0)
+        A_hat_corr = torch.zeros_like(A_hat)
+    
     E_hat_corr_norm = torch.zeros_like(E_hat)
     E_hat_corr = torch.zeros_like(E_hat)
-    indTab = torch.zeros((E_hat.size()[0],E_hat.size()[2])) # Premier indice : mini-batch, deuxieme : nombre de sources
+    indices = torch.zeros((E_hat.size()[0],E_hat.size()[2])) # Premier indice : mini-batch, deuxieme : nombre de sources
     
     for ii in range(E_gt.size()[0]):
-        W0 = normalize(E_gt[ii,:,:],p=2.0,dim=0) # Une seule matrice (plus de mini-batch)
-        W = normalize(E_hat[ii,:,:],p=2.0,dim=0) # Une seule matrice (plus de mini-batch)
+        E0 = normalize(E_gt[ii,:,:],p=2.0,dim=0) # Une seule matrice (plus de mini-batch)
+        E = normalize(E_hat[ii,:,:],p=2.0,dim=0) # Une seule matrice (plus de mini-batch)
         
-        W0 = W0.detach().cpu().numpy()
-        W = W.detach().cpu().numpy()
+        E0 = E0.detach().cpu().numpy()
+        E = E.detach().cpu().numpy()
         
-        costmat = -W0.T@W; # Avec Munkres, il faut bien un -
-    
+        costmat = -E0.T@E; # Avec Munkres, il faut bien un -
         
         m = Munkres()
         Jperm = m.compute(costmat.tolist())
         
-        WPerm = np.zeros(np.shape(W0))
-        WPerm_norm = np.zeros(np.shape(W0))
-        indPerm = np.zeros(np.shape(W0)[1])
+        EPerm = np.zeros(np.shape(E0))
+        EPerm_norm = np.zeros(np.shape(E0))
+        perm_indices = np.zeros(np.shape(E0)[1])
+    
+        if A_hat is not None:
+            APerm = np.zeros(A_hat[ii].shape)
         
-        for jj in range(W0.shape[1]):
-            WPerm[:,jj] = E_hat[ii,:,Jperm[jj][1]].detach().cpu().numpy()
-            WPerm_norm[:,jj] = W[:,Jperm[jj][1]]
-            indPerm[jj] = Jperm[jj][1]
+        for jj in range(E0.shape[1]):
+            EPerm[:,jj] = E_hat[ii,:,Jperm[jj][1]].detach().cpu().numpy()
+            EPerm_norm[:,jj] = E[:,Jperm[jj][1]]
+            perm_indices[jj] = Jperm[jj][1]
+            if A_hat is not None:
+                APerm[jj] = A_hat[ii, Jperm[jj][1]].detach().cpu().numpy()
         
-        E_hat_corr_norm[ii,:,:] = torch.from_numpy(WPerm_norm)
-        E_hat_corr[ii,:,:] = torch.from_numpy(WPerm)
-        indTab[ii,:] = torch.from_numpy(indPerm)
-    indTab = indTab.type(torch.int64)
+        E_hat_corr_norm[ii,:,:] = torch.from_numpy(EPerm_norm)
+        E_hat_corr[ii,:,:] = torch.from_numpy(EPerm)
+        indices[ii,:] = torch.from_numpy(perm_indices)
+        if A_hat is not None:
+            A_hat_corr[ii] = torch.from_numpy(APerm)
+    indices = indices.type(torch.int64)
 
-    return E_hat_corr,E_hat_corr_norm,indTab
+    if A_hat is not None:
+        return E_hat_corr, E_hat_corr_norm, A_hat_corr, indices
+    else:
+        return E_hat_corr,E_hat_corr_norm,indices
 
 def compute_metrics_and_plot(e_hat, e_gt, a_hat, a_gt, name=None, use_wandb=False):
     """
@@ -194,64 +212,35 @@ def compute_metrics_and_plot(e_hat, e_gt, a_hat, a_gt, name=None, use_wandb=Fals
     n = num_E // 2
     if num_E % 2 != 0: n = n + 1
 
-    dict, _, _ = order_endmembers(e_hat, e_gt)
-
-    E_ordered = []
-    A_ordered = []
+    E_ordered, E_ordered_norm, a_hat, indices = order_endmembers(e_hat, e_gt, a_hat)
+    E_ordered = E_ordered[0]
+    a_hat = a_hat[0]
     
-    for i in range(num_E):
-        E_ordered.append(e_hat[:, dict[i]])
-        A_ordered.append(a_hat[dict[i], :])
-    
-    E_ordered = torch.stack(E_ordered, dim=1)
-    A_ordered = torch.stack(A_ordered, dim=0)
-    # Average_MSE = mse(a_gt,A_ordered)/(torch.norm(a_gt)**2)
-
-    dict, _, Average_MSE = order_abundances(a_hat, a_gt)
-
-    E_ordered = []
-    A_ordered = []
-    for i in range(num_E):
-        E_ordered.append(e_hat[:, dict[i]])
-        A_ordered.append(a_hat[dict[i],:, :])
-    E_ordered = torch.stack(E_ordered, dim=1)
-    A_ordered = torch.stack(A_ordered, dim=0)
-
-    sad_ordered = []
+    sads = []
+    mses = []
 
     fig = plt.figure(num=1, figsize=(8, 8))
     plt.clf()
 
     for i in range(num_E):
-        z = sad(e_gt[:, i], E_ordered[:, i])
-        sad_ordered.append(z.item())
-    sad_ordered = torch.tensor(sad_ordered)
-
-    Average_SAD = torch.mean(sad_ordered)
+        sad_ = sad(e_gt[0, :, i], E_ordered[:, i])
+        mse_ = mse(a_gt, a_hat)/(torch.norm(a_gt)**2)
+        sads.append(sad_.item())
+        mses.append(mse_.item())
+    sads = torch.tensor(sads)
+    mses = torch.tensor(mses)
+    Average_SAD = torch.mean(sads)
+    Average_MSE = torch.mean(mses)
     title = f"{name} aSAD score for all E: " + format(Average_SAD, '.5f')
     st = plt.suptitle(title)
-
-    E_ordered = E_ordered/ E_ordered.max(dim=0, keepdim=True).values
-    e_gt = e_gt/ e_gt.max(dim=0, keepdim=True).values
 
     for i in range(num_E):
         ax = plt.subplot(2, n, i + 1)
         plt.plot(e_gt[:, i].detach().cpu(), 'r', linewidth=1.0, label='GT')
         plt.plot(E_ordered[:, i].detach().cpu(), 'k-', linewidth=1.0, label='predict')
         plt.legend()
-        ax.set_title("SAD: " + format(sad_ordered[i], '.5f'))
+        ax.set_title("SAD: " + format(sads[i], '.5f'))
         ax.get_xaxis().set_visible(False)
-        
-    # sad_ordered.append(Average_SAM)
-    # sad_ordered = torch.stack(sad_ordered)
-
-    # mse = alter_MSE(a_gt.detach().cpu().numpy(), A_ordered.cpu().numpy())
-    # mse_scores = []
-    # for i in range(num_E):
-    #     z = mse(a_gt[:, i], A_ordered[:, i])
-    #     mse_scores.append(z.item())
-    # mse_scores = torch.tensor(mse_scores)
-    # Average_MSE = torch.mean(mse_scores)
 
     plt.tight_layout()
     # st.set_y(0.95)

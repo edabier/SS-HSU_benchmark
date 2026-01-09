@@ -454,18 +454,6 @@ class UnDIP(nn.Module, HSUModel):
     @staticmethod
     def loss(E_gt, E_hat, A_gt, A_hat, Y_gt, Y_hat):
         mse = nn.MSELoss(reduction="sum")
-
-        # dict, _, _ = utils.order_endmembers(E_hat, E_gt)
-        # E_ordered = []
-        
-        # for i in range(E_gt.shape[2]):
-        #     E_ordered.append(E_hat[:, :, dict[i]])
-        
-        # E_ordered = torch.stack(E_ordered, dim=0)
-        # E_ordered = E_ordered.reshape(E_ordered.shape[1], E_ordered.shape[2], E_ordered.shape[0])
-        
-        # Y_pred = E_ordered @ A_hat
-        # loss1 = mse(Y_gt, Y_pred)
         loss2 = mse(Y_gt, Y_hat)
 
         return loss2
@@ -607,18 +595,10 @@ class NALMU(nn.Module, HSUModel):
         sad = utils.SADLoss()
         mse = nn.MSELoss(reduction='sum')
 
-        dict, _, _ = utils.order_endmembers(E_hat, E_gt)
-        E_ordered = []
-        A_ordered = []
-        
-        for i in range(num_E):
-            E_ordered.append(E_hat[:, :, dict[i]])
-            A_ordered.append(A_hat[:, dict[i], :])
-        
-        E_ordered = torch.stack(E_ordered, dim=0)
-        E_ordered = E_ordered.reshape(E_ordered.shape[1], E_ordered.shape[2], E_ordered.shape[0])
-        A_ordered = torch.stack(A_ordered, dim=0)
-        A_ordered = A_ordered.reshape(A_ordered.shape[1], A_ordered.shape[0], A_ordered.shape[2])
+        E_ordered, E_ordered_norm, A_ordered, indices = utils.order_endmembers(E_gt, E_hat, A_hat)
+        E_ordered = E_ordered[0]
+        E_gt = E_gt[0]
+        A_ordered = A_ordered[0]
         
         train_A = mse(A_gt,A_ordered)/(torch.norm(A_gt)**2)
         train_E = sad(E_gt,E_ordered)
@@ -712,7 +692,7 @@ class RALMU(nn.Module, HSUModel):
 
     @staticmethod
     def loss(E_gt, E_hat, A_gt, A_hat, Y_gt, Y_hat):
-        num_E = E_hat.shape[2]
+        # num_E = E_hat.shape[2]
 
         if E_hat.dim() != 3:
             E_hat = E_hat.unsqueeze(0)
@@ -720,18 +700,22 @@ class RALMU(nn.Module, HSUModel):
         sad = utils.SADLoss()
         mse = nn.MSELoss(reduction='sum')
 
-        dict, _, _ = utils.order_endmembers(E_hat, E_gt)
-        E_ordered = []
-        A_ordered = []
+        E_ordered, E_ordered_norm, A_ordered, indices = utils.order_endmembers(E_gt, E_hat, A_hat)
+        E_ordered = E_ordered[0]
+        E_gt = E_gt[0]
+        A_ordered = A_ordered[0]
+        # dict, _, _ = utils.order_endmembers(E_hat, E_gt)
+        # E_ordered = []
+        # A_ordered = []
         
-        for i in range(num_E):
-            E_ordered.append(E_hat[:, :, dict[i]])
-            A_ordered.append(A_hat[:, dict[i], :])
+        # for i in range(num_E):
+        #     E_ordered.append(E_hat[:, :, dict[i]])
+        #     A_ordered.append(A_hat[:, dict[i], :])
         
-        E_ordered = torch.stack(E_ordered, dim=0)
-        E_ordered = E_ordered.reshape(E_ordered.shape[1], E_ordered.shape[2], E_ordered.shape[0])
-        A_ordered = torch.stack(A_ordered, dim=0)
-        A_ordered = A_ordered.reshape(A_ordered.shape[1], A_ordered.shape[0], A_ordered.shape[2])
+        # E_ordered = torch.stack(E_ordered, dim=0)
+        # E_ordered = E_ordered.reshape(E_ordered.shape[1], E_ordered.shape[2], E_ordered.shape[0])
+        # A_ordered = torch.stack(A_ordered, dim=0)
+        # A_ordered = A_ordered.reshape(A_ordered.shape[1], A_ordered.shape[0], A_ordered.shape[2])
         
         train_A = mse(A_gt,A_ordered)/(torch.norm(A_gt)**2)
         train_E = sad(E_gt,E_ordered)
