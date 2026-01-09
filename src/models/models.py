@@ -490,7 +490,7 @@ class UnDIP(nn.Module, HSUModel):
         for b in range(batch):
             e_hat.append(extractor.SiVM(x_flat[b], self.c))
         e_hat = torch.stack(e_hat, dim=0)
-
+        e_hat = e_hat.squeeze(0)
         y_hat = e_hat @ a_hat
         
         return e_hat, a_hat, y_hat

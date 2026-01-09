@@ -59,7 +59,8 @@ def SiVM(Y, c, E_gt=None):
     else: 
         _, _, N = Y.shape 
     
-    Vh, S, U = torch.linalg.svd(Y, full_matrices=False) 
+    Vh, S, U = torch.linalg.svd(Y, full_matrices=False)
+    print(Vh.shape, S.shape, U.shape)
     PC = torch.diag(S) @ U 
     Yp = Vh[:, :c] @ PC[:c, :] 
     d = torch.zeros((c, N), device=dev) # distance matrix 
@@ -80,11 +81,11 @@ def SiVM(Y, c, E_gt=None):
     E = Yp[:, I] 
         
     if E_gt is not None: 
-        dict, _, _ = utils.order_endmembers(E.unsqueeze(0), E_gt.unsqueeze(0)) 
-        E_ordered = [] 
-        for i in range(E_gt.shape[1]): 
-            E_ordered.append(E[:, dict[i]]) 
-        E_ordered = torch.stack(E_ordered, dim=1) 
+        E_ordered, E_ordered_norm, indices = utils.order_endmembers(E.unsqueeze(0), E_gt.unsqueeze(0)) 
+        # E_ordered = [] 
+        # for i in range(E_gt.shape[1]): 
+        #     E_ordered.append(E[:, dict[i]]) 
+        # E_ordered = torch.stack(E_ordered, dim=1) 
         return E_ordered 
     else: 
         return E

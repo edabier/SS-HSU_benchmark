@@ -13,6 +13,7 @@ import wandb
 from io import BytesIO
 from PIL import Image
 from scipy.optimize import linear_sum_assignment
+from code_christophe.munkres import Munkres
 
 # class SADLoss(nn.Module):
 #     """
@@ -147,86 +148,40 @@ def numpy_order_endmembers(endmembers, endmembersGT):
     Average_SAM = np.sum(SAD_)/ len(SAD_)
     return dict, SAD_, Average_SAM
 
-def order_endmembers(endmembers, endmembersGT):
-    if endmembers.dim() != 3:
-        endmembers = endmembers.unsqueeze(0)
-    if endmembersGT.dim() != 3:
-        endmembersGT = endmembersGT.unsqueeze(0)
+def order_endmembers(E_hat, E_gt):
 
-    num_endmembers = endmembers.shape[2]
-    device = endmembers.device
-    dict = {}
-    SAD_ = []
-    sad_mat = torch.ones((num_endmembers, num_endmembers), device=device) * 100.0
-    sad = SADLoss()
+    E_hat_corr_norm = torch.zeros_like(E_hat)
+    E_hat_corr = torch.zeros_like(E_hat)
+    indTab = torch.zeros((E_hat.size()[0],E_hat.size()[2])) # Premier indice : mini-batch, deuxieme : nombre de sources
+    
+    for ii in range(E_gt.size()[0]):
+        W0 = normalize(E_gt[ii,:,:],p=2.0,dim=0) # Une seule matrice (plus de mini-batch)
+        W = normalize(E_hat[ii,:,:],p=2.0,dim=0) # Une seule matrice (plus de mini-batch)
+        
+        W0 = W0.detach().cpu().numpy()
+        W = W.detach().cpu().numpy()
+        
+        costmat = -W0.T@W; # Avec Munkres, il faut bien un -
+    
+        
+        m = Munkres()
+        Jperm = m.compute(costmat.tolist())
+        
+        WPerm = np.zeros(np.shape(W0))
+        WPerm_norm = np.zeros(np.shape(W0))
+        indPerm = np.zeros(np.shape(W0)[1])
+        
+        for jj in range(W0.shape[1]):
+            WPerm[:,jj] = E_hat[ii,:,Jperm[jj][1]].detach().cpu().numpy()
+            WPerm_norm[:,jj] = W[:,Jperm[jj][1]]
+            indPerm[jj] = Jperm[jj][1]
+        
+        E_hat_corr_norm[ii,:,:] = torch.from_numpy(WPerm_norm)
+        E_hat_corr[ii,:,:] = torch.from_numpy(WPerm)
+        indTab[ii,:] = torch.from_numpy(indPerm)
+    indTab = indTab.type(torch.int64)
 
-    # Normalize endmembers and endmembersGT
-    endmembers = endmembers / endmembers.max(dim=1, keepdim=True).values
-    endmembersGT = endmembersGT / endmembersGT.max(dim=1, keepdim=True).values
-
-    # Compute SAD matrix
-    for i in range(num_endmembers):
-        for j in range(num_endmembers):
-            # sad_mat[i, j] = sad(endmembersGT[:, :,i].unsqueeze(0), endmembers[:, :,i].unsqueeze(0))
-            sad_mat[i, j] = sad(endmembersGT[:, :,i], endmembers[:, :,j])
-
-    rows = 0
-    while rows < num_endmembers:
-        minimum = sad_mat.min()
-        index_arr = (sad_mat == minimum).nonzero(as_tuple=True)
-        if minimum == 100:
-            break
-        if len(index_arr[0]) < 1:
-            break
-        index = (index_arr[0][0].item(), index_arr[1][0].item())
-        dict[index[1]] = index[0]  # keep GT at first
-        SAD_.append(minimum.item())
-        sad_mat[index[0], index[1]] = 100
-        rows += 1
-        sad_mat[index[0], :] = 100
-        sad_mat[:, index[1]] = 100
-
-    SAD_ = torch.tensor(SAD_, device=device)
-    Average_SAM = SAD_.sum() / len(SAD_)
-
-    return dict, SAD_, Average_SAM
-
-def order_abundances(A_hat, A_gt):
-    """
-    Find the reorganizing order of abundances by endmember minimizing the mse with the ground truth
-    """
-    if A_hat.dim() == 4:
-        A_hat = A_hat.squeeze(0)
-        A_gt = A_gt.squeeze(0)
-
-    c, H, W = A_hat.shape
-    device = A_hat.device
-
-    # Flatten spatial dimensions for MSE computation
-    # A_hat_flat = A_hat.reshape(c, -1)  # (c, H*W)
-    # A_gt_flat = A_gt.reshape(c, -1)  # (c, H*W)
-
-    # Compute MSE matrix (c, c)
-    mse_mat = torch.zeros((c, c), device=device)
-    for i in range(c):
-        for j in range(c):
-            mse_mat[i, j] = nn.functional.mse_loss(A_hat[i], A_gt[j], reduction="sum")/(torch.norm(A_gt)**2)
-            # mse_mat[i, j] = nn.functional.mse_loss(
-            #     A_hat[i], A_gt[j], reduction="sum"
-            # )
-
-    # Use Hungarian algorithm to find optimal assignment
-    row_ind, col_ind = linear_sum_assignment(mse_mat.cpu().numpy())
-    mapping = {row: col for row, col in zip(row_ind, col_ind)}
-
-    # Store MSE values for matched pairs
-    mse_values = [mse_mat[i, j].item() for i, j in zip(row_ind, col_ind)]
-    # print(sum(mse) for mse in mse_values)
-
-    # Compute average MSE
-    avg_mse = sum(mse_values) / c
-
-    return mapping, mse_values, avg_mse
+    return E_hat_corr,E_hat_corr_norm,indTab
 
 def compute_metrics_and_plot(e_hat, e_gt, a_hat, a_gt, name=None, use_wandb=False):
     """
