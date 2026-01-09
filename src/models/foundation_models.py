@@ -1,4 +1,5 @@
 import torch.nn as nn
+import torch.nn.functional as F
 import torch
 import sys
 import argparse
@@ -29,19 +30,22 @@ else:
     dev = "cpu"
 
 
-class FoundationModel():
-    def __init__(self, model_name, patch_size=None, im_size=None, channels=None, n_em=None):
+MODELS = ["SpectralEarth", "SpectralGPT", "DOFA", "HyperFree", "HyperSL", "HyperSIGMA"]
+
+class FoundationModel(nn.Module):
+    def __init__(self, model_name, patch_size=None, im_size=None, channels=None, n_em=None, wavelengths=None):
         """
         Instantiate the provided foundation model
         """
-        models = ["SpectralEarth", "SpectralGPT", "DOFA", "HyperFree", "HyperSL", "HyperSIGMA"]
+        super(FoundationModel, self).__init__()
 
-        if model_name not in models:
+        if model_name not in MODELS:
             raise ValueError("The provided model_name does not correspond to any of [SpectralEarth, SpectralGPT, DOFA, HyperFree, HyperSL, HyperSIGMA]")
 
         self.model_name = model_name
         self.patch_size = patch_size
-        self.im_size = im_size
+        self.channels = channels
+        self.n_em = n_em
 
         if model_name == "SpectralEarth":
             model = SpecViTBase()
@@ -51,7 +55,7 @@ class FoundationModel():
 
             self.model = model
             self.im_size = 128
-            self.encoder = None
+            self.encoder = Abundances_from_features(self.n_em, self.im_size, self.channels)
             self.decoder = Decoder(n_em, channels)
 
         # elif model_name == "SpectralGPT":
@@ -68,19 +72,27 @@ class FoundationModel():
             # self.model = spectral_gpt
             
         elif model_name == "DOFA":
+            assert self.channels is not None, "channels must be set"
+            assert self.n_em is not None, "n_em must be set"
+            assert wavelengths is not None, "wavelengths must be set"
+
             state_dict = torch.load("/home/ids/edabier/HSU/DOFA/checkpoints/DOFA_ViT_base_e100.pth", map_location=dev)
-            self.im_size = 224
             model = vit_base_patch16()
             model.load_state_dict(state_dict, strict=False)
+
+            self.im_size = 224
+            self.wavelengths = wavelengths
             self.model = model
-            
-            self.encoder = None
+            self.encoder = Abundances_from_features(self.n_em, self.im_size, self.channels)
             self.decoder = Decoder(n_em, channels)
 
         elif model_name == "HyperFree":
             assert self.patch_size is not None, "Patch_size must be set"
-            assert self.im_size is not None, "im_size must be set"
+            assert wavelengths is not None, "wavelengths must be set"
+            assert im_size is not None, "im_size must be set"
 
+            self.im_size = im_size
+            self.wavelengths = wavelengths
             pred = build_HyperFree_vit_b(checkpoint="/home/ids/edabier/HSU/HyperFree/data/HyperFree-b.pth", image_size=im_size, vit_patch_size=patch_size)
             self.model = predictor.HyperFree_Predictor(pred)
 
@@ -88,8 +100,8 @@ class FoundationModel():
             pass
 
         elif model_name == "HyperSIGMA":
-            assert channels is not None, "The number of channels must be specified for HyperSIGMA"
-            assert n_em is not None, "The number of endmembers must be specified for HyperSIGMA"
+            assert self.channels is not None, "The number of channels must be specified for HyperSIGMA"
+            assert self.n_em is not None, "The number of endmembers must be specified for HyperSIGMA"
 
             parser = argparse.ArgumentParser()
             parser.add_argument('--patch_size', default=64)
@@ -133,11 +145,8 @@ class FoundationModel():
             model_params.update(same_parsms)
             model.load_state_dict(model_params)
             self.model = model
-        
-    def create_decoder(self, c, B):
-        self.decoder = Decoder(c, B)
 
-    def get_features(self, Y, wavelengths=None):
+    def get_features(self, Y):
         """
         Forwards the input HSI to the model's encoder to get features
 
@@ -162,20 +171,20 @@ class FoundationModel():
             print(f"Input HSI smaller than expected size ({self.im_size}), padding to match")
 
         if self.model_name == "HyperFree":
-            assert wavelengths is not None, "HyperFree needs wavelengths list for spectral embedding"
+            assert self.wavelengths is not None, "HyperFree needs wavelengths list for spectral embedding"
             GSD = 0.456
             ratio = 1024 / (max(Y.shape[2], Y.shape[3]))
             GSD = GSD / ratio
             GSD = torch.tensor([GSD])
 
             input_im = self.model.transform.apply_image_torch(Y)
-            self.model.set_torch_image(input_im, original_image_size=(Y.shape[1], Y.shape[2]), spectral_lengths=wavelengths, GSD=GSD)
+            self.model.set_torch_image(input_im, original_image_size=(Y.shape[1], Y.shape[2]), spectral_lengths=self.wavelengths, GSD=GSD)
 
             return self.model.features
         
         elif self.model_name == "DOFA":
-            assert wavelengths is not None, "DOFA needs wavelengths list for the positional encoding"
-            return self.model.forward_features(Y, wave_list=wavelengths) 
+            assert self.wavelengths is not None, "DOFA needs wavelengths list for the positional encoding"
+            return self.model.forward_features(Y, wave_list=self.wavelengths) 
         
         elif self.model_name == "SpectralEarth":
             return self.model(Y)
@@ -187,15 +196,16 @@ class FoundationModel():
         else:
             pass
     
-    def get_abundances(self, F, c, N):
-        # TO DO: define a method to extract A from features F
-
+    def get_abundances(self, F, Y):
         if self.model_name == "SpectralEarth" or self.model_name == "DOFA":
-            A_hat = torch.rand(c, )
 
-        pass
+            if Y.shape[-1] > self.im_size:
+                Y = Y[:, :self.im_size, :self.im_size]
 
-    def unmix(self, Y, c):
+            A_hat = self.encoder(F, Y)
+            return A_hat
+
+    def forward(self, Y):
         """
         Unmix the input HSI by extracting features using the rsfm, and using them to obtain abundances and endmembers
 
@@ -205,22 +215,23 @@ class FoundationModel():
         """
         if Y.dim() == 4:
             batch, B, H, W = Y.shape
+            Y = Y.squeeze(0)
         elif Y.dim() == 3:
             B, H, W = Y.shape
-            Y = Y.unsqueeze(0)
+            # Y = Y.unsqueeze(0)
         else:
             print("Input HSI must be of shape (B, H, W) or (batch, B, H, W)")
             return 
-        
-        # if not hasattr(self, 'decoder'):
-        #     self.create_decoder(c, B)
 
         F = self.get_features(Y)
-        A = self.get_abundances(F, c, H*W)
+        A = self.get_abundances(F, Y)
         Y_hat = self.decoder(A)
         E = self.decoder.get_endmembers()
 
         return E, A, Y_hat
+
+    def get_adapter_size(self):
+        print("Adapter has", sum(p.numel() for p in self.encoder.parameters() if p.requires_grad + p.numel() for p in self.decoder.parameters() if p.requires_grad)/1e3, "k params")
 
 class weightConstraint(object):
     def __init__(self):
@@ -243,6 +254,74 @@ class Decoder(nn.Module):
         return code
 
     def get_endmembers(self):
-        constraints = weightConstraint()
-        self.decoder.apply(constraints)
-        return self.decoder.weight.data
+        return self.decoder.weight.data.squeeze([2, 3])
+    
+class Abundances_from_features(nn.Module):
+    """
+    A lightweight "encoder" using ViT 1D feature vector and input HSI to obtain abundances estimates
+    Assumes a square image (H=W)
+    
+    Args:
+        c (int): the number of endmembers to extract
+        H (int): the shape of the input HSI
+        B (int): the number of spectral bands in the input HSI
+    """
+    def __init__(self, c, H, B):
+        super().__init__()
+        self.H = H
+        self.c = c
+        self.B = B
+
+        # Step 1: Upsample from 16 to 64
+        self.upsample1 = nn.ConvTranspose2d(
+            in_channels=3,
+            out_channels=3,
+            kernel_size=8,
+            stride=4,
+            padding=2,
+        )
+        # Step 2: Upsample from 64 to H
+        stride2 = H // 64
+        kernel_size2 = 2 * stride2
+        padding2 = kernel_size2 // 2 - 1
+        self.upsample2 = nn.ConvTranspose2d(
+            in_channels=3,
+            out_channels=3,
+            kernel_size=kernel_size2,
+            stride=stride2,
+            padding=padding2,
+        )
+
+        # Reduce y channels: (B, H, H) -> (32, H, H)
+        self.reduce_y = nn.Conv2d(B, 32, kernel_size=1)
+
+        # Merge features: (32 + 3, H, H) -> (c, H, H)
+        self.merge = nn.Sequential(
+            nn.Conv2d(32 + 3, 32, kernel_size=1),
+            nn.ReLU(),
+            nn.Conv2d(32, c, kernel_size=1),
+        )
+
+    def forward(self, features, y):
+        """
+        Args:
+            features: (1, 768)
+            y: (B, H, H)
+        Returns:
+            output: (c, H, H)
+        """
+        # Reshape features to (3, 16, 16)
+        features = features.view(3, 16, 16).unsqueeze(0)
+        upsampled = self.upsample1(features) # -> (3, 64, 64)
+        upsampled = self.upsample2(upsampled) # -> (3, H, H)
+
+        # If H is not divisible by 64, crop or interpolate
+        if upsampled.shape[2] != self.H:
+            upsampled = F.interpolate(upsampled, size=(self.H, self.H), mode='bilinear')
+
+        y = y.unsqueeze(0)
+        reduced_y = self.reduce_y(y) # (32, H, H)
+
+        concatenated = torch.cat([reduced_y, upsampled], dim=1)
+        output = self.merge(concatenated) # (c, H, H)
+        return output.squeeze(0)

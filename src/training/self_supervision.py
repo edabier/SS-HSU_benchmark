@@ -34,13 +34,12 @@ def train(model, dataloader, patch_size=None, has_decoder=True, epochs=320, lr=0
 
             if model_name == "DeepTrans":
                 Y, A = utils.crop_patch_image(Y, patch_size, A)
-
-            A_init_disp = A.to(torch.float32)
-            E_init_disp = torch.ones(E.size(),dtype=torch.float32)
-            A_init = torch.ones_like(A_init_disp)
-            E_init = torch.ones_like(E_init_disp)
             
             if "NALMU" in model_name or "RALMU" in model_name:
+                A_init_disp = A.to(torch.float32)
+                E_init_disp = torch.ones(E.size(),dtype=torch.float32)
+                A_init = torch.ones_like(A_init_disp)
+                E_init = torch.ones_like(E_init_disp)
                 e_hat, a_hat, y_hat = model(Y, E_init=E_init, A_init=A_init)
             else:
                 e_hat, a_hat, y_hat = model(Y)
@@ -100,38 +99,47 @@ class SupervisedTrainer():
         train_A = mse(A_gt,A_hat)/(torch.norm(A_gt)**2)
         train_E = sad(E_gt,E_hat)
         
-        return train_A + train_E
+        return train_A + train_E, train_A, train_E
 
-    def train(self, dataloader, dev):
+    def train(self, train_loader, test_loader, valid_loader, dev):
+
+        model_name = self.model.__class__.__name__
+        if model_name == "NALMU" or model_name == "RALMU":
+            model_name += str(self.model.T)
             
-        train_losses = []
+        train_losses, train_losses_A, train_losses_E = [], [], []
+        valid_losses, valid_losses_A, valid_losses_E = [], [], []
+        test_losses, test_losses_A, test_losses_E = [], [], []
+
         for epoch in range(self.epochs):
             
-            train_loss = 0
+            train_loss, train_loss_A,train_loss_E = 0, 0, 0
             
-            for Y, E, A in dataloader:
+            self.model.train()
+            for Y, E, A in train_loader:
                 self.optimizer.zero_grad()
                 
                 Y = Y.to(dev)
                 E = E.to(dev)
                 A = A.to(dev)
 
-                if self.patch_size is not None:
+                if model_name == "DeepTrans":
                     Y, A = utils.crop_patch_image(Y, self.patch_size, A)
 
-                A_init_disp = A.to(torch.float32)
-                E_init_disp = torch.ones(E.size(),dtype=torch.float32)
-                A_init = torch.ones_like(A_init_disp)
-                E_init = torch.ones_like(E_init_disp)
-
-                if self.has_decoder:
-                    e_hat, a_hat, y_hat = self.model(Y)
-                else:
+                if "NALMU" in model_name or "RALMU" in model_name:
+                    A_init_disp = A.to(torch.float32)
+                    E_init_disp = torch.ones(E.size(),dtype=torch.float32)
+                    A_init = torch.ones_like(A_init_disp)
+                    E_init = torch.ones_like(E_init_disp)
                     e_hat, a_hat, y_hat = self.model(Y, E_init=E_init, A_init=A_init)
+                else:
+                    e_hat, a_hat, y_hat = self.model(Y)                    
 
-                # loss = self.criterion(E, e_hat, A, a_hat)
-                loss = self.model.loss(E, e_hat, A, a_hat, Y, y_hat)
+                loss, loss_A, loss_E = self.criterion(E, e_hat, A, a_hat)
+                # loss = self.model.loss(E, e_hat, A, a_hat, Y, y_hat)
                 train_loss += loss.item()
+                train_loss_A += loss_A.item()
+                train_loss_E += loss_E.item()
                 
                 loss.backward()
                 self.optimizer.step()
@@ -139,22 +147,91 @@ class SupervisedTrainer():
                 if self.has_decoder:
                     with torch.no_grad():
                         self.model.decoder.apply(models.weightConstraint())
-            
-            if self.scheduler is not None:
-                self.scheduler.step()
         
-            train_loss /= len(dataloader)
+            train_loss /= len(train_loader)
+            train_loss_A /= len(train_loader)
+            train_loss_E /= len(train_loader)
             train_losses.append(train_loss)
+            train_losses_A.append(train_loss_A)
+            train_losses_E.append(train_loss_E)
             
             try:
-                dataset_name = dataloader.dataset.dataset_name
+                dataset_name = train_loader.dataset.dataset_name
             except:
-                dataset_name = dataloader.dataset.dataset.dataset_name
+                dataset_name = train_loader.dataset.dataset.dataset_name
 
             # Save checkpoint
             utils.save_model(self.model, self.optimizer, directory=directory, name=f"{self.__class__.__name__}_{dataset_name}", epoch=epoch)
+
+            valid_loss, valid_loss_A, valid_loss_E = 0, 0, 0
+            test_loss, test_loss_A, test_loss_E = 0, 0, 0
+
+            self.model.eval()
+            with torch.no_grad():
+                for Y, E, A in valid_loader:
+                    
+                    Y = Y.to(dev)
+                    E = E.to(dev)
+                    A = A.to(dev)
+
+                    if model_name == "DeepTrans":
+                        Y, A = utils.crop_patch_image(Y, self.patch_size, A)
+
+                    if "NALMU" in model_name or "RALMU" in model_name:
+                        A_init_disp = A.to(torch.float32)
+                        E_init_disp = torch.ones(E.size(),dtype=torch.float32)
+                        A_init = torch.ones_like(A_init_disp)
+                        E_init = torch.ones_like(E_init_disp)
+                        e_hat, a_hat, y_hat = self.model(Y, E_init=E_init, A_init=A_init)
+                    else:
+                        e_hat, a_hat, y_hat = self.model(Y)                    
+
+                    loss, loss_A, loss_E = self.criterion(E, e_hat, A, a_hat)
+                    valid_loss += loss.item()
+                    valid_loss_A += loss_A.item()
+                    valid_loss_E += loss_E.item()
+            
+                valid_loss /= len(valid_loader)
+                valid_loss_A /= len(valid_loader)
+                valid_loss_E /= len(valid_loader)
+                valid_losses.append(valid_loss)
+                valid_losses_A.append(valid_loss_A)
+                valid_losses_E.append(valid_loss_E)
                 
-        return e_hat, a_hat, train_losses
+                for Y, E, A in test_loader:
+                    
+                    Y = Y.to(dev)
+                    E = E.to(dev)
+                    A = A.to(dev)
+
+                    if model_name == "DeepTrans":
+                        Y, A = utils.crop_patch_image(Y, self.patch_size, A)
+
+                    if "NALMU" in model_name or "RALMU" in model_name:
+                        A_init_disp = A.to(torch.float32)
+                        E_init_disp = torch.ones(E.size(),dtype=torch.float32)
+                        A_init = torch.ones_like(A_init_disp)
+                        E_init = torch.ones_like(E_init_disp)
+                        e_hat, a_hat, y_hat = self.model(Y, E_init=E_init, A_init=A_init)
+                    else:
+                        e_hat, a_hat, y_hat = self.model(Y)                    
+
+                    loss, loss_A, loss_E = self.criterion(E, e_hat, A, a_hat)
+                    test_loss += loss.item()
+                    test_loss_A += loss_A.item()
+                    test_loss_E += loss_E.item()
+            
+                test_loss /= len(test_loader)
+                test_loss_A /= len(valid_loader)
+                test_loss_E /= len(valid_loader)
+                test_losses.append(valid_loss)
+                test_losses_A.append(valid_loss_A)
+                test_losses_E.append(valid_loss_E)
+            
+            if epoch%(self.epochs/10) == 0:
+                print(f"Epoch {epoch}: train_A = {train_loss_A}, train_E = {train_loss_E}, \nvalid_A = {valid_loss_A}, valid_E = {valid_loss_E}, \ntest_A = {test_loss_A}, test_E = {test_loss_E}")
+                
+        return train_losses, train_losses_A, train_losses_E, valid_losses, valid_losses_A, valid_losses_E, test_losses, test_losses_A, test_losses_E
 
 class SelfSupervisedTrainer():
     def __init__(self):

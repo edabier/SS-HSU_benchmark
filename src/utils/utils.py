@@ -58,11 +58,19 @@ class SADLoss(nn.Module):
         super(SADLoss, self).__init__()
 
     def forward(self, y_true, y_pred):
-        y_true = torch.nn.functional.normalize(y_true, dim=1, p=2)
-        y_pred = torch.nn.functional.normalize(y_pred, dim=1, p=2)
+        if y_pred.dim() == 1:
+            y_true = torch.nn.functional.normalize(y_true, dim=0, p=2)
+            y_pred = torch.nn.functional.normalize(y_pred, dim=0, p=2)
+        else:
+            y_true = torch.nn.functional.normalize(y_true, dim=1, p=2)
+            y_pred = torch.nn.functional.normalize(y_pred, dim=1, p=2)
 
         A = torch.mul(y_true, y_pred)
-        A = torch.sum(A, dim=1)
+
+        if y_true.dim() == 1:
+            A = torch.sum(A, dim=0)
+        else:
+            A = torch.sum(A, dim=1)
         sad = torch.acos(A)
         loss = torch.mean(sad)
         return loss
@@ -186,8 +194,6 @@ def order_endmembers(endmembers, endmembersGT):
 def order_abundances(A_hat, A_gt):
     """
     Find the reorganizing order of abundances by endmember minimizing the mse with the ground truth
-
-
     """
     if A_hat.dim() == 4:
         A_hat = A_hat.squeeze(0)
@@ -197,16 +203,17 @@ def order_abundances(A_hat, A_gt):
     device = A_hat.device
 
     # Flatten spatial dimensions for MSE computation
-    A_hat_flat = A_hat.reshape(c, -1)  # (B, c, H*W)
-    A_gt_flat = A_gt.reshape(c, -1)  # (B, c, H*W)
+    # A_hat_flat = A_hat.reshape(c, -1)  # (c, H*W)
+    # A_gt_flat = A_gt.reshape(c, -1)  # (c, H*W)
 
-    # Compute MSE matrix (B, c, c)
+    # Compute MSE matrix (c, c)
     mse_mat = torch.zeros((c, c), device=device)
     for i in range(c):
         for j in range(c):
-            mse_mat[i, j] = torch.nn.functional.mse_loss(
-                A_hat_flat[i], A_gt_flat[j], reduction="sum"
-            )
+            mse_mat[i, j] = nn.functional.mse_loss(A_hat[i], A_gt[j], reduction="sum")/(torch.norm(A_gt)**2)
+            # mse_mat[i, j] = nn.functional.mse_loss(
+            #     A_hat[i], A_gt[j], reduction="sum"
+            # )
 
     # Use Hungarian algorithm to find optimal assignment
     row_ind, col_ind = linear_sum_assignment(mse_mat.cpu().numpy())
@@ -220,6 +227,169 @@ def order_abundances(A_hat, A_gt):
     avg_mse = sum(mse_values) / c
 
     return mapping, mse_values, avg_mse
+
+def compute_metrics_and_plot(e_hat, e_gt, a_hat, a_gt, name=None, use_wandb=False):
+    """
+    Computes the SAD of predicted E and MSE of predicted A
+    """
+    sad = SADLoss()
+    mse = nn.MSELoss(reduction = "sum")
+
+    num_E = e_hat.shape[-1]
+    n = num_E // 2
+    if num_E % 2 != 0: n = n + 1
+
+    dict, _, _ = order_endmembers(e_hat, e_gt)
+
+    E_ordered = []
+    A_ordered = []
+    
+    for i in range(num_E):
+        E_ordered.append(e_hat[:, dict[i]])
+        A_ordered.append(a_hat[dict[i], :])
+    
+    E_ordered = torch.stack(E_ordered, dim=1)
+    A_ordered = torch.stack(A_ordered, dim=0)
+    # Average_MSE = mse(a_gt,A_ordered)/(torch.norm(a_gt)**2)
+
+    dict, _, Average_MSE = order_abundances(a_hat, a_gt)
+
+    E_ordered = []
+    A_ordered = []
+    for i in range(num_E):
+        E_ordered.append(e_hat[:, dict[i]])
+        A_ordered.append(a_hat[dict[i],:, :])
+    E_ordered = torch.stack(E_ordered, dim=1)
+    A_ordered = torch.stack(A_ordered, dim=0)
+
+    sad_ordered = []
+
+    fig = plt.figure(num=1, figsize=(8, 8))
+    plt.clf()
+
+    for i in range(num_E):
+        z = sad(e_gt[:, i], E_ordered[:, i])
+        sad_ordered.append(z.item())
+    sad_ordered = torch.tensor(sad_ordered)
+
+    Average_SAD = torch.mean(sad_ordered)
+    title = f"{name} aSAD score for all E: " + format(Average_SAD, '.5f')
+    st = plt.suptitle(title)
+
+    E_ordered = E_ordered/ E_ordered.max(dim=0, keepdim=True).values
+    e_gt = e_gt/ e_gt.max(dim=0, keepdim=True).values
+
+    for i in range(num_E):
+        ax = plt.subplot(2, n, i + 1)
+        plt.plot(e_gt[:, i].detach().cpu(), 'r', linewidth=1.0, label='GT')
+        plt.plot(E_ordered[:, i].detach().cpu(), 'k-', linewidth=1.0, label='predict')
+        plt.legend()
+        ax.set_title("SAD: " + format(sad_ordered[i], '.5f'))
+        ax.get_xaxis().set_visible(False)
+        
+    # sad_ordered.append(Average_SAM)
+    # sad_ordered = torch.stack(sad_ordered)
+
+    # mse = alter_MSE(a_gt.detach().cpu().numpy(), A_ordered.cpu().numpy())
+    # mse_scores = []
+    # for i in range(num_E):
+    #     z = mse(a_gt[:, i], A_ordered[:, i])
+    #     mse_scores.append(z.item())
+    # mse_scores = torch.tensor(mse_scores)
+    # Average_MSE = torch.mean(mse_scores)
+
+    plt.tight_layout()
+    # st.set_y(0.95)
+    fig.subplots_adjust(top=0.88)
+    plt.draw()
+    plt.pause(0.001)
+
+    if use_wandb:
+        buf = BytesIO()
+        plt.savefig(buf, format='png')
+        plt.close()
+        buf.seek(0)
+        
+        img = Image.open(buf)
+        img_array = np.array(img)
+
+        # Log the image to wandb
+        wandb.log({"Endmember extraction": wandb.Image(img_array)})
+
+    fig, axes = plt.subplots(a_hat.shape[0], 2, figsize=(5, 10))
+    axes[0, 0].set_title(f"{name}_pred", fontsize=12)
+    axes[0, 1].set_title(f"{name}_GT", fontsize=12)
+
+    # Plot tensor images
+    for i in range(a_hat.shape[0]):
+        axes[i, 0].imshow(a_hat[i].detach().cpu())
+        axes[i, 0].axis('off')
+
+        axes[i, 1].imshow(a_gt[i].detach().cpu())
+        axes[i, 1].axis('off')
+
+    # Adjust layout to reduce white space
+    plt.subplots_adjust(wspace=0.05, hspace=0.1)
+    plt.tight_layout()
+    plt.show()
+
+    if use_wandb:
+        buf = BytesIO()
+        plt.savefig(buf, format='png')
+        plt.close()
+        buf.seek(0)
+        
+        img = Image.open(buf)
+        img_array = np.array(img)
+
+        # Log the image to wandb
+        wandb.log({"Abundance extraction": wandb.Image(img_array)})
+
+    return Average_MSE, Average_SAD
+
+def compute_metrics(E, A, E_hat, A_hat, rmse=False):
+    
+    if rmse:
+        re = torch.mean(torch.sqrt(torch.mean((A - A_hat) ** 2, dim=2)))
+    else:
+        re = torch.mean(torch.sum((A - A_hat) ** 2, dim=2))
+        
+    E_norm = E / torch.norm(E, dim=0, keepdim=True)
+    E_hat_norm = E_hat / torch.norm(E_hat, dim=0, keepdim=True)
+    sad = torch.mean(torch.acos(torch.clamp(torch.sum(E_norm * E_hat_norm, dim=0), -1.0, 1.0)))
+    
+    return re, sad
+
+def test_model(model, test_loader, wandb=False):
+    """
+    Tests the input model on the input test dataset
+    """
+    
+    if wandb:
+        run = wandb.init(
+            project=f"{model.__class__.__name__}_test",
+            config={
+                "dataset": test_loader # Check if the dataloader can access the dataset variables to get the name
+            },
+        )
+        
+    test_metrics = {"re": [], "sad": []}
+    for Y, E, A in test_loader:
+        
+        e_hat, a_hat, y_hat = model(Y)
+            
+        re, sad = compute_metrics(E, A, e_hat, a_hat)
+        test_metrics["re"].append(re)
+        test_metrics["sad"].append(sad)
+        
+        if wandb:
+            wandb.log({"re": re})
+            wandb.log({"sad": sad})
+    
+    mean_re = torch.mean(torch.tensor(test_metrics["re"]))
+    mean_sad = torch.mean(torch.tensor(test_metrics["sad"]))
+    
+    return mean_re, mean_sad
 
 def crop_patch_image(Y, patch_size, A=None):
     """
@@ -282,148 +452,6 @@ def oneD_to_2d(Y):
         B, N = Y.shape
         H = int(N**0.5)
         return Y.reshape(B, H, H), H
-
-def compute_metrics_and_plot(e_hat, e_gt, a_hat, a_gt, name=None, use_wandb=False):
-    """
-    Computes the SAD of predicted E and MSE of predicted A
-    """
-    sad = SADLoss()
-
-    num_E = e_hat.shape[-1]
-    n = num_E // 2
-    if num_E % 2 != 0: n = n + 1
-
-    # dict, _, Average_SAM = order_endmembers(e_hat, e_gt)
-    dict, _, Average_SAM = order_abundances(a_hat, a_gt)
-    sad_ordered = []
-    E_ordered = []
-    A_ordered = []
-
-    fig = plt.figure(num=1, figsize=(8, 8))
-    plt.clf()
-    title = f"{name} aSAM score for all E: " + format(Average_SAM, '.5f') + " radians"
-    st = plt.suptitle(title)
-
-    e_hat = e_hat/ e_hat.max(dim=0, keepdim=True).values
-    e_gt = e_gt/ e_gt.max(dim=0, keepdim=True).values
-
-    for i in range(num_E):
-        E_ordered.append(e_hat[:, dict[i]])
-        A_ordered.append(a_hat[dict[i],:, :])
-
-    E_ordered = torch.stack(E_ordered, dim=1)
-    A_ordered = torch.stack(A_ordered, dim=0)
-
-    for i in range(num_E):
-        z = sad(e_gt, E_ordered)
-        sad_ordered.append(z)
-
-    for i in range(num_E):
-        ax = plt.subplot(2, n, i + 1)
-        plt.plot(e_gt[:, i].detach().cpu(), 'r', linewidth=1.0, label='GT')
-        plt.plot(E_ordered[:, i].detach().cpu(), 'k-', linewidth=1.0, label='predict')
-        plt.legend()
-        ax.set_title("SAD: " + format(sad_ordered[i], '.5f'))
-        ax.get_xaxis().set_visible(False)
-        
-    # sad_ordered.append(Average_SAM)
-    sad_ordered = torch.stack(sad_ordered)
-
-    # mse = alter_MSE(a_gt.detach().cpu().numpy(), A_ordered.cpu().numpy())
-    mse = alter_MSE(a_gt, A_ordered)
-
-    plt.tight_layout()
-    # st.set_y(0.95)
-    fig.subplots_adjust(top=0.88)
-    plt.draw()
-    plt.pause(0.001)
-
-    if use_wandb:
-        buf = BytesIO()
-        plt.savefig(buf, format='png')
-        plt.close()
-        buf.seek(0)
-        
-        img = Image.open(buf)
-        img_array = np.array(img)
-
-        # Log the image to wandb
-        wandb.log({"Endmember extraction": wandb.Image(img_array)})
-
-    fig, axes = plt.subplots(a_hat.shape[0], 2, figsize=(5, 10))
-    axes[0, 0].set_title(f"{name}_pred", fontsize=12)
-    axes[0, 1].set_title(f"{name}_GT", fontsize=12)
-
-    # Plot tensor images
-    for i in range(a_hat.shape[0]):
-        axes[i, 0].imshow(a_hat[i].detach().cpu())
-        axes[i, 0].axis('off')
-
-        axes[i, 1].imshow(a_gt[i].detach().cpu())
-        axes[i, 1].axis('off')
-
-    # Adjust layout to reduce white space
-    plt.subplots_adjust(wspace=0.05, hspace=0.1)
-    plt.tight_layout()
-    plt.show()
-
-    if use_wandb:
-        buf = BytesIO()
-        plt.savefig(buf, format='png')
-        plt.close()
-        buf.seek(0)
-        
-        img = Image.open(buf)
-        img_array = np.array(img)
-
-        # Log the image to wandb
-        wandb.log({"Abundance extraction": wandb.Image(img_array)})
-
-    return mse, sad_ordered
-
-def compute_metrics(E, A, E_hat, A_hat, rmse=False):
-    
-    if rmse:
-        re = torch.mean(torch.sqrt(torch.mean((A - A_hat) ** 2, dim=2)))
-    else:
-        re = torch.mean(torch.sum((A - A_hat) ** 2, dim=2))
-        
-    E_norm = E / torch.norm(E, dim=0, keepdim=True)
-    E_hat_norm = E_hat / torch.norm(E_hat, dim=0, keepdim=True)
-    sad = torch.mean(torch.acos(torch.clamp(torch.sum(E_norm * E_hat_norm, dim=0), -1.0, 1.0)))
-    
-    return re, sad
-
-def test_model(model, test_loader, wandb=False):
-    """
-    Tests the input model on the input test dataset
-    """
-    
-    if wandb:
-        run = wandb.init(
-            project=f"{model.__class__.__name__}_test",
-            config={
-                "dataset": test_loader # Check if the dataloader can access the dataset variables to get the name
-            },
-        )
-        
-    test_metrics = {"re": [], "sad": []}
-    for Y, E, A in test_loader:
-        
-        e_hat, a_hat, y_hat = model(Y)
-            
-        re, sad = compute_metrics(E, A, e_hat, a_hat)
-        test_metrics["re"].append(re)
-        test_metrics["sad"].append(sad)
-        
-        if wandb:
-            wandb.log({"re": re})
-            wandb.log({"sad": sad})
-    
-    mean_re = torch.mean(torch.tensor(test_metrics["re"]))
-    mean_sad = torch.mean(torch.tensor(test_metrics["sad"]))
-    
-    return mean_re, mean_sad
 
 class HSI_dataset(Dataset):    
     def __init__(self, dataset, path="/home/ids/edabier/HSU/SS-HSU_benchmark/datasets/", patch_size=None, dtype=None):

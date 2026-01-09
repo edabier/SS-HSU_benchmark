@@ -18,31 +18,31 @@ def run_one_xp(mses, sads, n, Y_init, B, c, N, H, loader, dataset, args, dev):
     """
     model_list = []
 
-    # # CNNAEU
-    # Y_loader, e_gt, a_gt = next(iter(loader))[0][0], next(iter(loader))[1][0], next(iter(loader))[2][0]
-    # cnnaeu = models.CNNAEU(B=B, c =c)
-    # cnnaeu = models.init_decoder_weights(cnnaeu, Y_loader, c, 11)
-    # model_list.append(cnnaeu)
+    # CNNAEU
+    Y_loader, e_gt, a_gt = next(iter(loader))[0][0], next(iter(loader))[1][0], next(iter(loader))[2][0]
+    cnnaeu = models.CNNAEU(B=B, c =c)
+    cnnaeu = models.init_decoder_weights(cnnaeu, Y_loader, c, 11)
+    model_list.append(cnnaeu)
     
-    # # Deep Trans
-    # Y_trans = Y_init[:,:(Y_init.shape[1]//args.patch_size)*args.patch_size,:(Y_init.shape[1]//args.patch_size)*args.patch_size]
-    # deep_trans = models.DeepTrans(B=B, c=c, im_size=Y_trans.shape[1], dim=200)
-    # deep_trans = models.init_decoder_weights(deep_trans, Y_loader, c)
-    # model_list.append(deep_trans)
+    # Deep Trans
+    Y_trans = Y_init[:,:(Y_init.shape[1]//args.patch_size)*args.patch_size,:(Y_init.shape[1]//args.patch_size)*args.patch_size]
+    deep_trans = models.DeepTrans(B=B, c=c, im_size=Y_trans.shape[1], dim=200)
+    deep_trans = models.init_decoder_weights(deep_trans, Y_loader, c)
+    model_list.append(deep_trans)
     
-    # # UnDIP
-    # undip = models.UnDIP(B=B, c=c)
-    # model_list.append(undip)
+    # UnDIP
+    undip = models.UnDIP(B=B, c=c)
+    model_list.append(undip)
     
-    # NALMU
-    nalmu = models.NALMU(T=25, B=B, c=c, N=N)
-    nalmu = nalmu.to(dev)
-    model_list.append(nalmu)
+    # # NALMU
+    # nalmu = models.NALMU(T=25, B=B, c=c, N=N)
+    # nalmu = nalmu.to(dev)
+    # model_list.append(nalmu)
 
-    # RALMU
-    ralmu = models.RALMU(T=25, B=B, c=c, im_size=H)
-    ralmu = ralmu.to(dev)
-    model_list.append(ralmu)
+    # # RALMU
+    # ralmu = models.RALMU(T=25, B=B, c=c, im_size=H)
+    # ralmu = ralmu.to(dev)
+    # model_list.append(ralmu)
 
     """
     Instanciating trainers
@@ -95,8 +95,9 @@ def run_one_xp(mses, sads, n, Y_init, B, c, N, H, loader, dataset, args, dev):
         a_gt, _ = utils.oneD_to_2d(a_gt)   
         
         mse, sad = utils.compute_metrics_and_plot(e_hat, e_gt, a_hat, a_gt, name=f"{model_name}_BASIC_{dataset}", use_wandb=True)
-        mses[i_model, n] = torch.tensor(mse[-1]).item()
-        sads[i_model, n] = torch.tensor(sad[-1]).item()
+        mses[i_model, n] = mse #torch.tensor(mse[-1]).item()
+        sads[i_model, n] = sad #torch.tensor(sad[-1]).item()
+        print(f"Current MSE: {mse}, SAD: {sad}")
         
         del e_hat, a_hat, y_hat
         del A_init, E_init
@@ -146,15 +147,15 @@ def main(args, dev):
         a_gt, _ = utils.oneD_to_2d(a_gt)    
         
         mse, sad = utils.compute_metrics_and_plot(e_hat, e_gt, a_hat, a_gt, name=f"SiVM+FCLS_{dataset}", use_wandb=True)
-        mses[2, 0] = torch.tensor(mse[-1]).item()
-        sads[2, 0] = torch.tensor(sad[-1]).item()
+        mses[2, 0] = mse #torch.tensor(mse[-1]).item()
+        sads[2, 0] = sad #torch.tensor(sad[-1]).item()
         
         mean_mses = torch.mean(mses, dim=1)
-        std_mses = torch.std(mses, dim=1)
         mean_sads = torch.mean(sads, dim=1)
+        std_mses = torch.std(mses, dim=1)
         std_sads = torch.std(sads, dim=1)
 
-        model_list = ["NALMU", "RALMU", "SiVM+FCLS"] #["CNNAEU", "DeepTrans", "UnDIP"]
+        model_list = ["CNNAEU", "DeepTrans", "UnDIP"] #["NALMU", "RALMU", "SiVM+FCLS"]
         for i_model, model in enumerate(model_list):
             wandb.log({f"{dataset}_{model}_BASIC MSE": mean_mses[i_model]})
             wandb.log({f"{dataset}_{model}_BASIC SAD": mean_sads[i_model]})
@@ -320,6 +321,11 @@ def main_trainers(args, dev):
                 wandb.log({f"{dataset}_{model}_{trainer} SAD": mean_sads[i_model, i_trainer]})
                 wandb.log({f"{dataset}_{model}_{trainer} MSE_std": std_mses[i_model, i_trainer]})
                 wandb.log({f"{dataset}_{model}_{trainer} SAD_std": std_sads[i_model, i_trainer]})
+
+def supervised_train():
+
+
+    pass
 
 if __name__ == "__main__":
 
