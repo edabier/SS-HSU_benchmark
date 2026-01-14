@@ -269,12 +269,12 @@ class CNNAEU(nn.Module, HSUModel):
         
         abund = F.softmax(code * self.scale, dim=1)
         a_hat = abund.reshape(batch, self.c, N)
-        # abund = abund.reshape(batch, -1)
         
         x_hat = self.decoder(abund)
         x_hat = x_hat.reshape(batch, B, N)
         
         e_hat = self.decoder.weight.detach().mean((2, 3))
+        e_hat = e_hat.reshape(batch, self.B, self.c)
         
         return e_hat, a_hat, x_hat
 
@@ -339,7 +339,6 @@ class DeepTrans(nn.Module, HSUModel):
 
         batch, patch, N = x.shape
         x, _ = utils.oneD_to_2d(x)
-        # print(x.shape, h)
 
         abu_est = self.encoder(x)
         cls_emb = self.vtrans(abu_est)
@@ -477,8 +476,8 @@ class UnDIP(nn.Module, HSUModel):
         e_hat = []
         for b in range(batch):
             e_hat.append(extractor.SiVM(x_flat[b], self.c))
+            
         e_hat = torch.stack(e_hat, dim=0)
-        e_hat = e_hat.squeeze(0)
         y_hat = e_hat @ a_hat
         
         return e_hat, a_hat, y_hat
@@ -704,19 +703,6 @@ class RALMU(nn.Module, HSUModel):
         E_ordered = E_ordered[0]
         E_gt = E_gt[0]
         A_ordered = A_ordered[0]
-        # dict, _, _ = utils.order_endmembers(E_hat, E_gt)
-        # E_ordered = []
-        # A_ordered = []
-        
-        # for i in range(num_E):
-        #     E_ordered.append(E_hat[:, :, dict[i]])
-        #     A_ordered.append(A_hat[:, dict[i], :])
-        
-        # E_ordered = torch.stack(E_ordered, dim=0)
-        # E_ordered = E_ordered.reshape(E_ordered.shape[1], E_ordered.shape[2], E_ordered.shape[0])
-        # A_ordered = torch.stack(A_ordered, dim=0)
-        # A_ordered = A_ordered.reshape(A_ordered.shape[1], A_ordered.shape[0], A_ordered.shape[2])
-        
         train_A = mse(A_gt,A_ordered)/(torch.norm(A_gt)**2)
         train_E = sad(E_gt,E_ordered)
 
@@ -787,3 +773,52 @@ class RALMU(nn.Module, HSUModel):
         X_reconstruct = E_est @ A_est
 
         return E_est, A_est, X_reconstruct
+    
+
+"""
+Other methods
+"""
+
+class MU(nn.Module):
+    def __init__(self, N_iter=int(1e5)):
+        super(MU, self).__init__()
+        self.N_iter = N_iter
+    
+    def init_A(self, batch, c, N):
+        A_init = torch.ones(batch, c, N)
+        return A_init
+    
+    def init_E(self, batch, B, c):
+        E_init = torch.ones(batch, B, c)
+        return E_init
+    
+    def forward(self, x, c):
+        if x.dim() < 3:
+            x = x.unsqueeze(0)
+            
+        batch, B, N = x.shape
+        
+        A_hat = self.init_A(batch, c, N)
+        E_hat = self.init_E(batch, B, c)
+        
+        E_hat_tab = []
+        A_hat_tab = []
+        Y_hat_tab = []
+        
+        for n in range(self.N_iter):
+            A_hat = A_hat * torch.bmm(torch.transpose(E_hat, 1, 2), x)/ (torch.bmm(torch.transpose(E_hat, 1, 2), torch.bmm(E_hat, A_hat)))
+            A_hat = A_hat.clip(min=1e-7, max=1)
+            
+            E_hat = E_hat * torch.bmm(x, torch.transpose(A_hat, 1, 2))/ (torch.bmm(torch.bmm(E_hat, A_hat), torch.transpose(A_hat, 1, 2)))
+            E_hat = E_hat.clip(min=1e-7,max=1e4)
+                
+            A_hat_tab.append(A_hat)
+            E_hat_tab.append(E_hat)
+            Y_hat_tab.append(E_hat @ A_hat)
+        
+        A_hat = A_hat_tab[-1]
+        E_hat = E_hat_tab[-1]
+        
+        Y_hat = Y_hat_tab[-1]
+        
+        return E_hat, A_hat, Y_hat, Y_hat_tab

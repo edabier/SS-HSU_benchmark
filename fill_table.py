@@ -18,31 +18,31 @@ def run_one_xp(mses, sads, n, Y_init, B, c, N, H, loader, dataset, args, dev):
     """
     model_list = []
 
-    # CNNAEU
-    Y_loader, e_gt, a_gt = next(iter(loader))[0][0], next(iter(loader))[1][0], next(iter(loader))[2][0]
-    cnnaeu = models.CNNAEU(B=B, c =c)
-    cnnaeu = models.init_decoder_weights(cnnaeu, Y_loader, c, 11)
-    model_list.append(cnnaeu)
+    # # CNNAEU
+    # Y_loader, e_gt, a_gt = next(iter(loader))[0][0], next(iter(loader))[1][0], next(iter(loader))[2][0]
+    # cnnaeu = models.CNNAEU(B=B, c =c)
+    # cnnaeu = models.init_decoder_weights(cnnaeu, Y_loader, c, 11)
+    # model_list.append(cnnaeu)
     
-    # Deep Trans
-    Y_trans = Y_init[:,:(Y_init.shape[1]//args.patch_size)*args.patch_size,:(Y_init.shape[1]//args.patch_size)*args.patch_size]
-    deep_trans = models.DeepTrans(B=B, c=c, im_size=Y_trans.shape[1], dim=200)
-    deep_trans = models.init_decoder_weights(deep_trans, Y_loader, c)
-    model_list.append(deep_trans)
+    # # Deep Trans
+    # Y_trans = Y_init[:,:(Y_init.shape[1]//args.patch_size)*args.patch_size,:(Y_init.shape[1]//args.patch_size)*args.patch_size]
+    # deep_trans = models.DeepTrans(B=B, c=c, im_size=Y_trans.shape[1], dim=200)
+    # deep_trans = models.init_decoder_weights(deep_trans, Y_loader, c)
+    # model_list.append(deep_trans)
     
-    # UnDIP
-    undip = models.UnDIP(B=B, c=c)
-    model_list.append(undip)
+    # # UnDIP
+    # undip = models.UnDIP(B=B, c=c)
+    # model_list.append(undip)
     
-    # # NALMU
-    # nalmu = models.NALMU(T=25, B=B, c=c, N=N)
-    # nalmu = nalmu.to(dev)
-    # model_list.append(nalmu)
+    # NALMU
+    nalmu = models.NALMU(T=25, B=B, c=c, N=N)
+    nalmu = nalmu.to(dev)
+    model_list.append(nalmu)
 
-    # # RALMU
-    # ralmu = models.RALMU(T=25, B=B, c=c, im_size=H)
-    # ralmu = ralmu.to(dev)
-    # model_list.append(ralmu)
+    # RALMU
+    ralmu = models.RALMU(T=25, B=B, c=c, im_size=H)
+    ralmu = ralmu.to(dev)
+    model_list.append(ralmu)
 
     """
     Instanciating trainers
@@ -67,21 +67,20 @@ def run_one_xp(mses, sads, n, Y_init, B, c, N, H, loader, dataset, args, dev):
         del e_hat, a_hat
         torch.cuda.empty_cache()
 
-        model.load_state_dict(torch.load(f"/home/ids/edabier/HSU/SS-HSU_benchmark/models/{model_name}_Basic_{dataset}_lr_{args.lr}.pt")["model_state_dict"], strict=False)
+        model.load_state_dict(torch.load(f"/home/ids/edabier/HSU/SS-HSU_benchmark/models/{model_name}_BASIC_{dataset}_lr_{args.lr}.pt")["model_state_dict"], strict=False)
         
         batch = next(iter(loader))
         Y, e_gt, a_gt = batch[0][0], batch[1][0], batch[2][0]
-    
-        A_init_disp = next(iter(loader))[2].to(torch.float32)
-        E_init_disp = torch.ones(next(iter(loader))[1].size(),dtype=torch.float32)
-        A_init = torch.ones_like(A_init_disp)
-        E_init = torch.ones_like(E_init_disp)
 
         with torch.no_grad():
             if model_name == "DeepTrans":
                 Y, a_gt = utils.crop_patch_image(Y, args.patch_size, a_gt)
 
             if "NALMU" in model_name or "RALMU" in model_name:
+                A_init_disp = next(iter(loader))[2].to(torch.float32)
+                E_init_disp = torch.ones(next(iter(loader))[1].size(),dtype=torch.float32)
+                A_init = torch.ones_like(A_init_disp)
+                E_init = torch.ones_like(E_init_disp)
                 e_hat, a_hat, y_hat = model.forward(Y, E_init=E_init, A_init=A_init)
             else:
                 e_hat, a_hat, y_hat = model.forward(Y)
@@ -100,7 +99,6 @@ def run_one_xp(mses, sads, n, Y_init, B, c, N, H, loader, dataset, args, dev):
         print(f"Current MSE: {mse}, SAD: {sad}")
         
         del e_hat, a_hat, y_hat
-        del A_init, E_init
         del model
         torch.cuda.empty_cache()
     
@@ -112,8 +110,8 @@ def main(args, dev):
     datasets = ["urban", "apex", "jasper", "samson"]
 
     # shape (n_models, n_xp)
-    mses = torch.zeros(3, n_xp, device=dev)
-    sads = torch.zeros(3, n_xp, device=dev)
+    # mses = torch.zeros(4, n_xp, device=dev)
+    # sads = torch.zeros(4, n_xp, device=dev)
 
     for i_dataset, dataset in enumerate(datasets):
 
@@ -127,16 +125,17 @@ def main(args, dev):
         Y_init, _ = utils.oneD_to_2d(Y_init)
         H, W = Y_init.shape[1], Y_init.shape[2]
 
-        loader, _, _ = utils.create_dataloader(dataset, dev=dev, batch_size=args.batch_size)
+        loader, _, _ = utils.get_dataloader(dataset, patch_size=64, batch_size=1)
 
-        for n in range(n_xp):
-            print(f"------ Running {n+1}th experiment ------")
-            mses, sads = run_one_xp(mses, sads, n, Y_init, B, c, N, H, loader, dataset, args, dev)
+        # for n in range(n_xp):
+        #     print(f"------ Running {n+1}th experiment ------")
+        #     mses, sads = run_one_xp(mses, sads, n, Y_init, B, c, N, H, loader, dataset, args, dev)
         
         batch = next(iter(loader))
         Y, e_gt, a_gt = batch[0][0], batch[1][0], batch[2][0]
 
-        e_hat, a_hat = extractor.unmix(Y, c, use_sivm=True)
+        # e_hat, a_hat = extractor.unmix(Y, c, use_sivm=True)
+        e_hat, a_hat = models.MU(Y, c)
 
         if e_hat.dim() == 3:
             e_hat = e_hat.squeeze(0)
@@ -147,20 +146,25 @@ def main(args, dev):
         a_gt, _ = utils.oneD_to_2d(a_gt)    
         
         mse, sad = utils.compute_metrics_and_plot(e_hat, e_gt, a_hat, a_gt, name=f"SiVM+FCLS_{dataset}", use_wandb=True)
-        mses[2, 0] = mse #torch.tensor(mse[-1]).item()
-        sads[2, 0] = sad #torch.tensor(sad[-1]).item()
+        # mses[3, 0] = mse #torch.tensor(mse[-1]).item()
+        # sads[3, 0] = sad #torch.tensor(sad[-1]).item()
         
-        mean_mses = torch.mean(mses, dim=1)
-        mean_sads = torch.mean(sads, dim=1)
-        std_mses = torch.std(mses, dim=1)
-        std_sads = torch.std(sads, dim=1)
+        # mean_mses = torch.mean(mses, dim=1)
+        # mean_sads = torch.mean(sads, dim=1)
+        # std_mses = torch.std(mses, dim=1)
+        # std_sads = torch.std(sads, dim=1)
 
-        model_list = ["CNNAEU", "DeepTrans", "UnDIP"] #["NALMU", "RALMU", "SiVM+FCLS"]
+        # model_list = ["NALMU", "RALMU"] #["CNNAEU", "DeepTrans", "UnDIP", "SiVM+FCLS"]
+        # for i_model, model in enumerate(model_list):
+        #     wandb.log({f"{dataset}_{model}_BASIC MSE": mean_mses[i_model]})
+        #     wandb.log({f"{dataset}_{model}_BASIC SAD": mean_sads[i_model]})
+        #     wandb.log({f"{dataset}_{model}_BASIC MSE_std": std_mses[i_model]})
+        #     wandb.log({f"{dataset}_{model}_BASIC SAD_std": std_sads[i_model]})
+
+        model_list = ["MU"] #["CNNAEU", "DeepTrans", "UnDIP", "SiVM+FCLS"]
         for i_model, model in enumerate(model_list):
-            wandb.log({f"{dataset}_{model}_BASIC MSE": mean_mses[i_model]})
-            wandb.log({f"{dataset}_{model}_BASIC SAD": mean_sads[i_model]})
-            wandb.log({f"{dataset}_{model}_BASIC MSE_std": std_mses[i_model]})
-            wandb.log({f"{dataset}_{model}_BASIC SAD_std": std_sads[i_model]})
+            wandb.log({f"{dataset}_{model}_BASIC MSE": mse})
+            wandb.log({f"{dataset}_{model}_BASIC SAD": sad})
 
 def run_one_xp_trainers(mses, sads, i_dataset, n, Y_init, B, c, N, H, loader, dataset, args, dev):
     """

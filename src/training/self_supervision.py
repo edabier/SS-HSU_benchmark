@@ -43,7 +43,7 @@ def train(model, dataloader, patch_size=None, has_decoder=True, epochs=320, lr=0
                 e_hat, a_hat, y_hat = model(Y, E_init=E_init, A_init=A_init)
             else:
                 e_hat, a_hat, y_hat = model(Y)
-
+            
             loss = model.loss(E, e_hat, A, a_hat, Y, y_hat)
             train_loss += loss.item()
             
@@ -63,7 +63,7 @@ def train(model, dataloader, patch_size=None, has_decoder=True, epochs=320, lr=0
             dataset_name = dataloader.dataset.dataset.dataset_name
 
         # Save checkpoint
-        utils.save_model(model, optimizer, directory=directory, name=f"Basic_{dataset_name}", epoch=epoch)
+        utils.save_model(model, optimizer, directory=directory, name=f"BASIC_{dataset_name}", epoch=epoch)
             
     return e_hat, a_hat, train_losses
     

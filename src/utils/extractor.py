@@ -81,10 +81,6 @@ def SiVM(Y, c, E_gt=None):
         
     if E_gt is not None: 
         E_ordered, E_ordered_norm, indices = utils.order_endmembers(E, E_gt) 
-        # E_ordered = [] 
-        # for i in range(E_gt.shape[1]): 
-        #     E_ordered.append(E[:, dict[i]]) 
-        # E_ordered = torch.stack(E_ordered, dim=1) 
         return E_ordered 
     else: 
         return E
