@@ -194,7 +194,7 @@ class CNNAE_linear(nn.Module, HSUModel):
             x = x.unsqueeze(0) # Add a batch dimension for inference
             
         batch, B, N = x.shape
-        x, _ = utils.oneD_to_2d(x)
+        x = utils.oneD_to_2d(x)
         
         code = self.encoder(x)
         
@@ -263,7 +263,7 @@ class CNNAEU(nn.Module, HSUModel):
             x = x.unsqueeze(0) # Add a batch dimension for inference
         
         batch, B, N = x.shape
-        x, _ = utils.oneD_to_2d(x)
+        x = utils.oneD_to_2d(x)
         
         code = self.encoder(x)
         
@@ -338,7 +338,7 @@ class DeepTrans(nn.Module, HSUModel):
             x = x.unsqueeze(0) # Add a batch dimension for inference
 
         batch, patch, N = x.shape
-        x, _ = utils.oneD_to_2d(x)
+        x = utils.oneD_to_2d(x)
 
         abu_est = self.encoder(x)
         cls_emb = self.vtrans(abu_est)
@@ -463,7 +463,7 @@ class UnDIP(nn.Module, HSUModel):
             x = x.unsqueeze(0) # Add a batch dimension for inference
 
         batch, B, N = x.shape
-        x, _ = utils.oneD_to_2d(x)
+        x = utils.oneD_to_2d(x)
         
         x1 = self.upsample(self.layer2(self.layer1(x)))
         xskip = self.layerskip(x)

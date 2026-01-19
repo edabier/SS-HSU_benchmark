@@ -5,6 +5,8 @@ import sys
 import argparse
 import os
 
+import src.utils.utils as utils
+
 global_path = "/home/ids/edabier/HSU"
 sys.path.append(global_path)
 
@@ -55,8 +57,7 @@ class FoundationModel(nn.Module):
 
             self.model = model
             self.im_size = 128
-            self.encoder = Abundances_from_features(self.n_em, self.im_size, self.channels)
-            self.decoder = Decoder(n_em, channels)
+            # self.unmixer = Unmixing_from_features(self.n_em, self.im_size, self.channels)
 
         # elif model_name == "SpectralGPT":
             # assert channels is not None, "The number of channels must be specified for SpectralGPT"
@@ -83,8 +84,7 @@ class FoundationModel(nn.Module):
             self.im_size = 224
             self.wavelengths = wavelengths
             self.model = model
-            self.encoder = Abundances_from_features(self.n_em, self.im_size, self.channels)
-            self.decoder = Decoder(n_em, channels)
+            # self.unmixer = Unmixing_from_features(self.n_em, self.im_size, self.channels)
 
         elif model_name == "HyperFree":
             assert self.patch_size is not None, "Patch_size must be set"
@@ -233,12 +233,20 @@ class FoundationModel(nn.Module):
     def get_adapter_size(self):
         print("Adapter has", sum(p.numel() for p in self.encoder.parameters() if p.requires_grad + p.numel() for p in self.decoder.parameters() if p.requires_grad)/1e3, "k params")
 
-class weightConstraint(object):
+class Weight_constraint(object):
     def __init__(self):
         pass
     def __call__(self, module):
         if hasattr(module, 'weight'):
             module.weight.clamp_(min=0)
+
+class Sum_to_one(nn.Module):
+    def __init__(self, scale=1):
+        super(Sum_to_one, self).__init__()
+        self.scale = scale
+    def forward(self, x):
+        x = F.softmax(self.scale * x, dim=1)
+        return x
 
 class Decoder(nn.Module):
     def __init__(self, c, B, kernel_size=1):
@@ -256,72 +264,184 @@ class Decoder(nn.Module):
     def get_endmembers(self):
         return self.decoder.weight.data.squeeze([2, 3])
     
-class Abundances_from_features(nn.Module):
-    """
-    A lightweight "encoder" using ViT 1D feature vector and input HSI to obtain abundances estimates
-    Assumes a square image (H=W)
-    
-    Args:
-        c (int): the number of endmembers to extract
-        H (int): the shape of the input HSI
-        B (int): the number of spectral bands in the input HSI
-    """
-    def __init__(self, c, H, B):
-        super().__init__()
-        self.H = H
-        self.c = c
+class Unmixing_from_features(nn.Module):
+    def __init__(self, D, B, c):
+        super(Unmixing_from_features, self).__init__()
+        self.D = D
         self.B = B
+        self.c = c
 
-        # Step 1: Upsample from 16 to 64
-        self.upsample1 = nn.ConvTranspose2d(
-            in_channels=3,
-            out_channels=3,
-            kernel_size=8,
-            stride=4,
-            padding=2,
-        )
-        # Step 2: Upsample from 64 to H
-        stride2 = H // 64
-        kernel_size2 = 2 * stride2
-        padding2 = kernel_size2 // 2 - 1
-        self.upsample2 = nn.ConvTranspose2d(
-            in_channels=3,
-            out_channels=3,
-            kernel_size=kernel_size2,
-            stride=stride2,
-            padding=padding2,
+        self.upsample = nn.ConvTranspose2d( # upsamples 14 -> 224
+            in_channels=4*D,
+            out_channels=4*D,
+            kernel_size=3,
+            stride=17,
+            padding=0,
         )
 
-        # Reduce y channels: (B, H, H) -> (32, H, H)
-        self.reduce_y = nn.Conv2d(B, 32, kernel_size=1)
-
-        # Merge features: (32 + 3, H, H) -> (c, H, H)
-        self.merge = nn.Sequential(
-            nn.Conv2d(32 + 3, 32, kernel_size=1),
-            nn.ReLU(),
-            nn.Conv2d(32, c, kernel_size=1),
+        self.conv1 = nn.Sequential(
+            nn.Conv2d(D*4, D*2, kernel_size=(3, 3), padding=1),
+            nn.LeakyReLU(0.02),
+            nn.BatchNorm2d(D*2),
+            nn.Dropout(0.2),
+            nn.Conv2d(D*2,  D, kernel_size=(1, 1)) )
+        self.conv2 = nn.Sequential(
+            nn.Conv2d(D, c, kernel_size=1),
+            nn.LeakyReLU(0.02),
+            nn.BatchNorm2d(c),
+            nn.Dropout(0.2),
         )
 
-    def forward(self, features, y):
-        """
-        Args:
-            features: (1, 768)
-            y: (B, H, H)
-        Returns:
-            output: (c, H, H)
-        """
-        # Reshape features to (3, 16, 16)
-        features = features.view(3, 16, 16).unsqueeze(0)
-        upsampled = self.upsample1(features) # -> (3, 64, 64)
-        upsampled = self.upsample2(upsampled) # -> (3, H, H)
+        self.sum_to_one = Sum_to_one()
+        self.decoder = Decoder(B=B, c=c)
 
-        # If H is not divisible by 64, crop or interpolate
-        if upsampled.shape[2] != self.H:
-            upsampled = F.interpolate(upsampled, size=(self.H, self.H), mode='bilinear')
+    @staticmethod
+    def loss(Y_gt, Y_hat, A_hat, E_hat, W_ab=0.35, W_tv=0.1):
+        sad = utils.SADLoss()
+        loss_sad = sad(Y_gt, Y_hat)
+        loss_ab = W_ab * torch.sqrt(A_hat).mean()
+        loss_tv = W_tv * (torch.abs(E_hat[:, 1:] - E_hat[:, :(-1)]).sum())
+        loss = 100*loss_sad + loss_ab + loss_tv
+        return loss
+    
+    def get_abundances(self, features):
 
-        y = y.unsqueeze(0)
-        reduced_y = self.reduce_y(y) # (32, H, H)
+        H_p = W_p = int(features.shape[1] ** 0.5)
+        features_2d = features.view(
+            1, 4*self.D, H_p, W_p
+        )
+        features_up = self.upsample(features_2d)
+        patch_D = self.conv1(features_up)
+        A_hat   = self.conv2(patch_D)
+        A_hat   = self.sum_to_one(A_hat)
 
-        concatenated = torch.cat([reduced_y, upsampled], dim=1)
-        output = self.merge(concatenated) # (c, H, H)
-        return output.squeeze(0)
+        return A_hat
+    
+    def forward(self, features):
+        A_hat = self.get_abundances(features)
+        Y_hat = self.decoder(A_hat)
+        E_hat = self.decoder.get_endmembers()
+
+        # Y_hat = Y_hat.reshape(1, self.B, 224**2)
+        # A_hat = A_hat.reshape(1, self.c, 224**2)
+
+        return E_hat, A_hat, Y_hat
+
+# class Unmixing_from_features(nn.Module):
+#     def __init__(self, D, B, c):
+#         super(Unmixing_from_features, self).__init__()
+#         self.D = D
+#         self.B = B
+#         self.c = c
+
+#         self.conv1 = nn.Sequential(
+#             nn.Conv2d(D*4, D*2, kernel_size=(3, 3), padding=1),
+#             nn.LeakyReLU(0.02),
+#             nn.BatchNorm2d(D*2),
+#             nn.Dropout(0.2),
+#             nn.Conv2d(D*2,  D, kernel_size=(1, 1)) )
+#         self.conv2 = nn.Sequential(
+#             nn.Conv2d(D, c, kernel_size=1),
+#             nn.LeakyReLU(0.02),
+#             nn.BatchNorm2d(c),
+#             nn.Dropout(0.2),
+#         )
+
+#         self.sum_to_one = Sum_to_one()
+#         self.decoder = Decoder(B=B, c=c)
+    
+#     def abundances_from_features(self, features):
+
+#         H_p = W_p = int(features.shape[1] ** 0.5)
+#         features_2d = features.view(
+#             1, 4*self.D, H_p, W_p
+#         )
+#         features_up = F.interpolate(
+#             features_2d,
+#             scale_factor=16,
+#             mode="bilinear",
+#             align_corners=True
+#         )
+
+#         patch_D = self.conv1(features_up)
+#         A_hat   = self.conv2(patch_D)
+#         A_hat   = self.sum_to_one(A_hat)
+
+#         return A_hat
+    
+#     def forward(self, features):
+#         A_hat = self.abundances_from_features(features)
+#         Y_hat = self.decoder(A_hat)
+#         E_hat = self.decoder.get_endmembers()
+
+#         return E_hat, A_hat, Y_hat
+
+# class Abundances_from_features(nn.Module):
+#     """
+#     A lightweight "encoder" using ViT 1D feature vector and input HSI to obtain abundances estimates
+#     Assumes a square image (H=W)
+    
+#     Args:
+#         c (int): the number of endmembers to extract
+#         H (int): the shape of the input HSI
+#         B (int): the number of spectral bands in the input HSI
+#     """
+#     def __init__(self, c, H, B):
+#         super().__init__()
+#         self.H = H
+#         self.c = c
+#         self.B = B
+
+#         # Step 1: Upsample from 16 to 64
+#         self.upsample1 = nn.ConvTranspose2d(
+#             in_channels=3,
+#             out_channels=3,
+#             kernel_size=8,
+#             stride=4,
+#             padding=2,
+#         )
+#         # Step 2: Upsample from 64 to H
+#         stride2 = H // 64
+#         kernel_size2 = 2 * stride2
+#         padding2 = kernel_size2 // 2 - 1
+#         self.upsample2 = nn.ConvTranspose2d(
+#             in_channels=3,
+#             out_channels=3,
+#             kernel_size=kernel_size2,
+#             stride=stride2,
+#             padding=padding2,
+#         )
+
+#         # Reduce y channels: (B, H, H) -> (32, H, H)
+#         self.reduce_y = nn.Conv2d(B, 32, kernel_size=1)
+
+#         # Merge features: (32 + 3, H, H) -> (c, H, H)
+#         self.merge = nn.Sequential(
+#             nn.Conv2d(32 + 3, 32, kernel_size=1),
+#             nn.ReLU(),
+#             nn.Conv2d(32, c, kernel_size=1),
+#         )
+
+#     def forward(self, features, y):
+#         """
+#         Args:
+#             features: (1, 768)
+#             y: (B, H, H)
+#         Returns:
+#             output: (c, H, H)
+#         """
+#         # Reshape features to (3, 16, 16)
+#         features = features.view(3, 16, 16).unsqueeze(0)
+#         upsampled = self.upsample1(features) # -> (3, 64, 64)
+#         upsampled = self.upsample2(upsampled) # -> (3, H, H)
+
+#         # If H is not divisible by 64, crop or interpolate
+#         if upsampled.shape[2] != self.H:
+#             upsampled = F.interpolate(upsampled, size=(self.H, self.H), mode='bilinear')
+
+#         y = y.unsqueeze(0)
+#         reduced_y = self.reduce_y(y) # (32, H, H)
+
+#         concatenated = torch.cat([reduced_y, upsampled], dim=1)
+#         output = self.merge(concatenated) # (c, H, H)
+#         return output.squeeze(0)

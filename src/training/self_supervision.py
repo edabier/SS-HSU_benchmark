@@ -1033,11 +1033,11 @@ class ContrastiveLearning(SelfSupervisedTrainer):
         
         # Reshape input HSI to a cube
         if y.dim() == 2:
-            y, _ = utils.oneD_to_2d(y)
+            y = utils.oneD_to_2d(y)
         B, H, W = y.shape
         
         E, A = extractor.unmix(y, c)
-        A, _ = utils.oneD_to_2d(A)
+        A = utils.oneD_to_2d(A)
         
         x, y = patch_pos
         current_patch = A[:, x:x+patch_size, y:y+patch_size]

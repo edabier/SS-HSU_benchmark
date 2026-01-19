@@ -90,8 +90,8 @@ def run_one_xp(mses, sads, n, Y_init, B, c, N, H, loader, dataset, args, dev):
         if a_hat.dim() == 3:
             a_hat = a_hat.squeeze(0)
         
-        a_hat, _ = utils.oneD_to_2d(a_hat)
-        a_gt, _ = utils.oneD_to_2d(a_gt)   
+        a_hat = utils.oneD_to_2d(a_hat)
+        a_gt = utils.oneD_to_2d(a_gt)   
         
         mse, sad = utils.compute_metrics_and_plot(e_hat, e_gt, a_hat, a_gt, name=f"{model_name}_BASIC_{dataset}", use_wandb=True)
         mses[i_model, n] = mse #torch.tensor(mse[-1]).item()
@@ -122,7 +122,7 @@ def main(args, dev):
         E = torch.tensor(data["E"])
         B, c, N = E.shape[0], E.shape[1], Y_init.shape[1]
 
-        Y_init, _ = utils.oneD_to_2d(Y_init)
+        Y_init = utils.oneD_to_2d(Y_init)
         H, W = Y_init.shape[1], Y_init.shape[2]
 
         loader, _, _ = utils.get_dataloader(dataset, patch_size=64, batch_size=1)
@@ -142,8 +142,8 @@ def main(args, dev):
         if a_hat.dim() == 3:
             a_hat = a_hat.squeeze(0)
         
-        a_hat, _ = utils.oneD_to_2d(a_hat)
-        a_gt, _ = utils.oneD_to_2d(a_gt)    
+        a_hat = utils.oneD_to_2d(a_hat)
+        a_gt = utils.oneD_to_2d(a_gt)    
         
         mse, sad = utils.compute_metrics_and_plot(e_hat, e_gt, a_hat, a_gt, name=f"SiVM+FCLS_{dataset}", use_wandb=True)
         # mses[3, 0] = mse #torch.tensor(mse[-1]).item()
