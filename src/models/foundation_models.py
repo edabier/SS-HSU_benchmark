@@ -233,6 +233,16 @@ class FoundationModel(nn.Module):
     def get_adapter_size(self):
         print("Adapter has", sum(p.numel() for p in self.encoder.parameters() if p.requires_grad + p.numel() for p in self.decoder.parameters() if p.requires_grad)/1e3, "k params")
 
+def features_comparison(Y_gt, Y_hat):
+    """
+    TO DO: write a function that computes the similarity between the features
+    Extracted from Y_gt and those extraced from Y_hat by some RSFM
+    Use Feed or LIPS metrics?
+    """
+    
+    
+    pass
+
 class Weight_constraint(object):
     def __init__(self):
         pass
