@@ -4,7 +4,7 @@ import torch.nn as nn
 import torch
 import torch.nn.functional as F
 from sklearn.feature_extraction.image import extract_patches_2d
-import tqdm
+import matplotlib.pyplot as plt
 
 import src.models.transformer as transformer
 import src.utils.extractor as extractor
@@ -36,19 +36,25 @@ class weightConstraint(object):
         if hasattr(module, 'weight'):
             module.weight.clamp_(min=0)
 
-def init_decoder_weights(model, Y, c, kernel=None):
+def init_decoder_weights(model, Y, c, kernel=None, is_unmixer=False, use_sivm=False):
     """
     Initializes the model's decoder weights with VCA extracted endmembers
     input Y must be of shape (B, N) or (B, H, W) -> no batch
     """
-    init_em = extractor.VCA(Y, c)
-    
+    if use_sivm:
+        init_em = extractor.SiVM(Y, c)
+    else:
+        init_em = extractor.VCA(Y, c)
+        
     model_dict = model.state_dict()
     
     if kernel is not None:
         model_dict['decoder.weight'][:, :, kernel//2, kernel//2] = init_em
     else:
-        model_dict["decoder.0.weight"][:,:,0,0] = init_em
+        if is_unmixer:
+            model_dict["decoder.decoder.weight"][:,:,0,0] = init_em
+        else:
+            model_dict["decoder.0.weight"][:,:,0,0] = init_em
         
     model.load_state_dict(model_dict)
     return model
@@ -105,6 +111,10 @@ class CNNAEU(nn.Module, HSUModel):
         return sad(Y_gt, Y_hat)
     
     def forward(self, x):
+        # Input shape (batch, B, N)
+        # Output shapes Y: (batch, B, N)
+        # E: (batch, B, c)
+        # A: (batch, c, N)
         
         if x.dim() < 3:
             x = x.unsqueeze(0) # Add a batch dimension for inference
@@ -132,10 +142,11 @@ class DeepTrans(nn.Module, HSUModel):
         c (int): the number of endmembers
         im_size (int): the height (or width) of the image (expects square image)
         patch_size (int, optional): how much to split the input image (default: 5)
+        embed_dim (int, optional): the dimension of the features extracted 
     """
-    def __init__(self, B, c, im_size, patch_size=5, dim=24):
+    def __init__(self, B, c, im_size, patch_size=5, embed_dim=24):
         super(DeepTrans, self).__init__()
-        self.B, self.c, self.im_size, self.dim, self.patch_size = B, c, im_size, dim, patch_size
+        self.B, self.c, self.im_size, self.embed_dim, self.patch_size = B, c, im_size, embed_dim, patch_size
         self.encoder = nn.Sequential(
             nn.Conv2d(B, 128, kernel_size=(1, 1), stride=(1, 1), padding=(0, 0)),
             nn.BatchNorm2d(128, momentum=0.9),
@@ -144,15 +155,15 @@ class DeepTrans(nn.Module, HSUModel):
             nn.Conv2d(128, 64, kernel_size=(1, 1), stride=(1, 1), padding=(0, 0)),
             nn.BatchNorm2d(64, momentum=0.9),
             nn.LeakyReLU(),
-            nn.Conv2d(64, (dim*c)//patch_size**2, kernel_size=(1, 1), stride=(1, 1), padding=(0, 0)),
-            nn.BatchNorm2d((dim*c)//patch_size**2, momentum=0.5),
+            nn.Conv2d(64, (embed_dim*c)//patch_size**2, kernel_size=(1, 1), stride=(1, 1), padding=(0, 0)),
+            nn.BatchNorm2d((embed_dim*c)//patch_size**2, momentum=0.5),
         )
 
-        self.vtrans = transformer.ViT(image_size=im_size, patch_size=patch_size, dim=(dim*c), depth=2,
+        self.vtrans = transformer.ViT(image_size=im_size, patch_size=patch_size, embed_dim=(embed_dim*c), depth=2,
                                       heads=8, mlp_dim=12, pool='cls')
         
         self.upscale = nn.Sequential(
-            nn.Linear(dim, im_size ** 2),
+            nn.Linear(embed_dim, im_size ** 2),
         )
         
         self.smooth = nn.Sequential(
@@ -180,6 +191,11 @@ class DeepTrans(nn.Module, HSUModel):
         return loss_re + loss_sad
 
     def forward(self, x):
+        # Input shape (batch, B, N*) with N*=H*²
+        # H* the highest multiple of patch that can fit in H
+        # Output shapes Y: (batch, B, N)
+        # E: (batch, B, c)
+        # A: (batch, c, N)
         
         if x.dim() < 3:
             x = x.unsqueeze(0) # Add a batch dimension for inference
@@ -195,9 +211,10 @@ class DeepTrans(nn.Module, HSUModel):
         re_result = self.decoder(abu_est)
         
         e_est = self.decoder[0].weight.detach()[:,:,0,0]
+        e_est = e_est.reshape(batch, self.B, self.c)
         
-        abu_est = abu_est.reshape(batch, abu_est.shape[1], N)
-        re_result = re_result.reshape(batch, re_result.shape[1], N)
+        abu_est = abu_est.reshape(batch, self.c, N)
+        re_result = re_result.reshape(batch, self.B, N)
         
         return e_est, abu_est, re_result
 
@@ -303,6 +320,10 @@ class UnDIP(nn.Module, HSUModel):
         return loss
 
     def forward(self, x):
+        # Input shape (batch, B, N)
+        # Output shapes Y: (batch, B, N)
+        # E: (batch, B, c)
+        # A: (batch, c, N)
 
         if x.dim() < 3:
             x = x.unsqueeze(0) # Add a batch dimension for inference

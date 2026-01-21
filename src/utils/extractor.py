@@ -103,15 +103,20 @@ def SiVM(Y, c, E_gt=None):
     SiVM endmember extractor based on UnDIP's repository 
 
     Args: 
-        Y: input HSI to extract endmembers from (shape (B, N) or (batch, B, N)) 
+        Y: input HSI to extract endmembers from (shape (B, N) or (B, H, W), no batch) 
         c (int): the number of endmembders to extract 
         E_gt (optional): if set, used to reorder the extracted endmembers to match E_gt 
     """ 
-    dev = Y.device 
-    if Y.dim() != 3: 
-        _, N = Y.shape 
-    else: 
-        _, _, N = Y.shape 
+    dev = Y.device
+
+    if Y.dim()!= 2:
+        if Y.dim() ==4:
+            Y = Y[0]
+        B, h, w = Y.shape
+        N = h*w
+        Y = Y.reshape(B, N)
+    else:
+        B, N = Y.shape
     
     Vh, S, U = torch.linalg.svd(Y, full_matrices=False)
     PC = torch.diag(S) @ U 
@@ -139,7 +144,7 @@ def SiVM(Y, c, E_gt=None):
     else: 
         return E
 
-def VCA(Y, c, seed=None, snr_input=0, verbose=False):
+def VCA(Y, c, snr_input=0):
     """
     Vertex Component Analysis algorithm by Jose M. P. Nascimento and Jose M. B. Dias
     
@@ -147,20 +152,16 @@ def VCA(Y, c, seed=None, snr_input=0, verbose=False):
         Y: input HSI to extract endmembers from (shape (B, h, w) or (B, N))
         c (int): the number of endmembders to extract
         snr_input: the snr of the input image (default: 0)
-        verbose (bool, optional): whether to display informations or not (default: False)
     """
     
     if Y.dim()!= 2:
+        if Y.dim() == 4:
+            Y = Y[0]
         B, h, w = Y.shape
         N = h*w
         Y = Y.reshape(B, N)
     else:
         B, N = Y.shape
-    
-    if seed is not None:
-        generator = torch.Generator().manual_seed(seed)
-    else:
-        generator = torch.Generator()
     
     if snr_input == 0:
         y_m = torch.mean(Y, dim=1, keepdim=True)
@@ -169,14 +170,8 @@ def VCA(Y, c, seed=None, snr_input=0, verbose=False):
         x_c = torch.matmul(Ud.T, Y_o)  # project the zero-mean data onto c-subspace
 
         SNR = estimate_snr(Y, y_m, x_c)
-
-        if verbose:
-            print(f"input SNR estimated = {SNR}[dB]")
     else:
         SNR = snr_input
-        
-        if verbose:
-            print(f"input SNR = {SNR}[dB]\n")
 
     SNR_th = 15 + 10 * torch.log10(torch.tensor(c))
 
@@ -228,9 +223,6 @@ def VCA(Y, c, seed=None, snr_input=0, verbose=False):
         A[:, i] = y[:, indices[i]]  # same as x(:,indice(i))
         
     E = Yc[:, indices] 
-
-    if verbose:
-        print(f"Indices chosen to be the most pure: {indices}")
 
     return E
 

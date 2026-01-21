@@ -109,9 +109,9 @@ def order_endmembers(E_gt, E_hat, A_hat=None):
     indices = indices.type(torch.int64)
 
     if A_hat is not None:
-        return E_hat_corr, E_hat_corr_norm, A_hat_corr, indices
+        return E_hat_corr[0], E_hat_corr_norm[0], A_hat_corr[0], indices
     else:
-        return E_hat_corr,E_hat_corr_norm,indices
+        return E_hat_corr[0], E_hat_corr_norm[0], indices
  
 def order_abundances(A_gt, A_hat, E_hat=None):
     if A_hat.dim() == 3:
@@ -188,9 +188,7 @@ def compute_metrics_and_plot(e_hat, e_gt, a_hat, a_gt, name=None, use_wandb=Fals
     n = num_E // 2
     if num_E % 2 != 0: n = n + 1
 
-    E_ordered, E_ordered_norm, a_hat, indices = order_endmembers(e_hat, e_gt, a_hat)
-    E_ordered = E_ordered[0]
-    a_hat = a_hat[0]
+    E_ordered, _, a_hat, indices = order_endmembers(e_hat, e_gt, a_hat)
     
     sads = []
     mses = []
@@ -267,44 +265,76 @@ def compute_metrics_and_plot(e_hat, e_gt, a_hat, a_gt, name=None, use_wandb=Fals
 
     return Average_MSE, Average_SAD
 
-def compute_metrics(E, A, E_hat, A_hat, rmse=False):
+def compute_metrics(E_gt, A_gt, E_hat, A_hat):
     
-    if rmse:
-        re = torch.mean(torch.sqrt(torch.mean((A - A_hat) ** 2, dim=2)))
-    else:
-        re = torch.mean(torch.sum((A - A_hat) ** 2, dim=2))
-        
-    E_norm = E / torch.norm(E, dim=0, keepdim=True)
-    E_hat_norm = E_hat / torch.norm(E_hat, dim=0, keepdim=True)
-    sad = torch.mean(torch.acos(torch.clamp(torch.sum(E_norm * E_hat_norm, dim=0), -1.0, 1.0)))
+    sad = SADLoss()
+    mse = nn.MSELoss(reduction='sum')
     
-    return re, sad
+    metric_A = mse(A_gt, A_hat)/(torch.norm(A_gt)**2)
+    metric_E = sad(E_gt, E_hat)
+    
+    return metric_A, metric_E
 
-def plot_results(E_hat, A_hat, A_gt=None, E_gt=None):
+def plot_results(E_hat, A_hat, A_gt=None, E_gt=None, model_name=None):
     """
     Displays the predicted endmembers and abundances
     """
+    if E_hat.dim() == 3:
+        print("Not taking batched E_hat")
+        E_hat = E_hat[0]
+    if E_gt is not None and E_gt.dim() == 3:
+        print("Not taking batched E_gt")
+        E_gt = E_gt[0]
+    if A_hat.dim() == 4:
+        print("Not taking batched A_hat")
+        A_hat = A_hat[0]
+    if A_gt.dim() == 4:
+        print("Not taking batched A_gt")
+        A_gt = A_gt[0]
+
     c = E_hat.shape[1]
     n_graph = c // 2
     if c % 2 != 0: n_graph = n_graph + 1
 
     if E_gt is not None:
+
+        E_hat, _, A_hat, _ = order_endmembers(E_gt, E_hat, A_hat)
+
         if E_gt.dim() == 3:
             E_gt = E_gt.squeeze(0)
 
+        fig, axes = plt.subplots(2, n_graph)
+        axes = axes.flatten()
+        if model_name is not None:
+            plt.suptitle(f'{model_name} Endmember estimation')
+        else:
+            plt.suptitle('Endmember estimation')
+        for i in range(c):
+            ax = axes[i]
+            ax.plot(E_gt[:, i].detach().cpu(), 'r', linewidth=1.0, label='GT')
+            ax.plot(E_hat[:, i].detach().cpu(), 'k-', linewidth=1.0, label='predict')
+            if i == 0:
+                plt.legend() 
+        for j in range(i + 1, len(axes)):
+            axes[j].axis('off')
+        
+        sad = SADLoss()
+        print(f"SAD(E, E_hat) = {format(sad(E_gt, E_hat), '.3f')}")
+    else:
+        if model_name is not None:
+            plt.suptitle(f'{model_name} Endmember estimation')
+        else:
+            plt.suptitle('Endmember estimation')
         for i in range(c):
             ax = plt.subplot(2, n_graph, i + 1)
-            plt.plot(E_gt[:, i].detach().cpu(), 'r', linewidth=1.0, label='GT')
             plt.plot(E_hat[:, i].detach().cpu(), 'k-', linewidth=1.0, label='predict')
-            plt.legend()
-    else:
-        for i in range(c):
-            ax = plt.subplot(1, n_graph, i + 1)
-            plt.plot(E_hat[:, i].detach().cpu(), 'k-', linewidth=1.0, label='predict')
-            plt.legend()
 
     if A_gt is not None:
         fig, axes = plt.subplots(2, A_hat.shape[0], figsize=(10, 5))
+        if model_name is not None:
+            plt.suptitle(f'{model_name} abundance estimation')
+        else:
+            plt.suptitle('Abundance estimation')
         axes[0, 0].set_title(f"Prediction", fontsize=12)
         axes[1, 0].set_title(f"GT", fontsize=12)
         for i in range(A_hat.shape[0]):
@@ -315,19 +345,20 @@ def plot_results(E_hat, A_hat, A_gt=None, E_gt=None):
             axes[1, i].axis('off')
         bar = plt.colorbar(gt)
         bar = plt.colorbar(pred)
+
+        mse = nn.MSELoss(reduction="sum")
+        print(f"MSE(A, A_hat) = {format(mse(A_gt, A_hat)/torch.norm(A_gt)**2, '.3f')}")
     else:
-        fig, axes = plt.subplots(2, n_graph, figsize=(10, 5))
-        axes[0, 0].set_title(f"Prediction", fontsize=12)
-        axes[1, 0].set_title(f"GT", fontsize=12)
-        for i in range(n_graph):
-            pred = axes[0, i].imshow(A_hat[i].detach().cpu())
-            axes[0, i].axis('off')
-
-            gt = axes[1, i].imshow(A_gt[i].detach().cpu())
-            axes[1, i].axis('off')
-        bar = plt.colorbar(gt)
+        fig, axes = plt.subplots(1, A_hat.shape[0], figsize=(10, 5))
+        if model_name is not None:
+            plt.suptitle(f'{model_name} abundance estimation')
+        else:
+            plt.suptitle('Abundance estimation')
+        axes[0].set_title(f"Prediction", fontsize=12)
+        for i in range(A_hat.shape[0]):
+            pred = axes[i].imshow(A_hat[i].detach().cpu())
+            axes[i].axis('off')
         bar = plt.colorbar(pred)
-
 
 def test_model(model, test_loader, wandb=False):
     """

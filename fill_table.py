@@ -25,8 +25,8 @@ def run_one_xp(mses, sads, n, Y_init, B, c, N, H, loader, dataset, args, dev):
     # model_list.append(cnnaeu)
     
     # # Deep Trans
-    # Y_trans = Y_init[:,:(Y_init.shape[1]//args.patch_size)*args.patch_size,:(Y_init.shape[1]//args.patch_size)*args.patch_size]
-    # deep_trans = models.DeepTrans(B=B, c=c, im_size=Y_trans.shape[1], dim=200)
+    # im_size = (H//patch_size)*patch_size
+    # deep_trans = models.DeepTrans(B=B, c=c, im_size=im_size, dim=patch_size**2)
     # deep_trans = models.init_decoder_weights(deep_trans, Y_loader, c)
     # model_list.append(deep_trans)
     

@@ -1,6 +1,8 @@
 import torch.nn as nn
 import torch.nn.functional as F
 import torch
+import numpy as np
+from sklearn.metrics.pairwise import cosine_similarity
 import sys
 import argparse
 import os
@@ -22,7 +24,7 @@ sys.path.append(f"{global_path}/DOFA")
 from dofa_v1 import vit_base_patch16
 
 sys.path.append(f"{global_path}/HyperSIGMA/HyperspectralUnmixing")
-from models.model import HyperSIGMA_Unmix
+from models.model import SpatViT, SpecViT
 
 if torch.cuda.is_available():
     dev = "cuda:0"
@@ -33,6 +35,272 @@ else:
 
 
 MODELS = ["SpectralEarth", "SpectralGPT", "DOFA", "HyperFree", "HyperSL", "HyperSIGMA"]
+
+class HyperSIGMA_Unmix(torch.nn.Module):
+    def __init__(self, patch_size, channels, seg_patches, NUM_TOKENS, embed_dim, num_em, scale):
+        super(HyperSIGMA_Unmix, self).__init__()
+        self.patch_size = patch_size
+        self.spat_encoder = SpatViT(img_size=patch_size,
+            in_chans=channels,
+            use_checkpoint=True,
+            patch_size=seg_patches,
+            drop_path_rate=0.1, out_indices=[3, 5, 7, 11], embed_dim=768,
+            depth=12, num_heads=12, mlp_ratio=4, qkv_bias=True, qk_scale=None,
+            drop_rate=0., attn_drop_rate=0., use_abs_pos_emb=False, n_points=8
+        )
+        self.spec_encoder = SpecViT(
+            NUM_TOKENS=NUM_TOKENS,
+            img_size=patch_size,
+            in_chans=channels,
+            drop_path_rate=0.1,
+            out_indices=[3, 5, 7, 11],
+            embed_dim=768,
+            depth=12,
+            num_heads=12,
+            mlp_ratio=4,
+            qkv_bias=True,
+            qk_scale=None,
+            drop_rate=0.,
+            attn_drop_rate=0.,
+            use_checkpoint=False,
+            use_abs_pos_emb=False,
+            interval=3
+        )
+
+        self.conv_features1 = nn.Conv2d(embed_dim, NUM_TOKENS, kernel_size=1, bias=False)
+        self.fc_spec1 = nn.Sequential(
+            nn.Linear(NUM_TOKENS, 32, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Linear(32, NUM_TOKENS, bias=False),
+            nn.Sigmoid(),
+        )
+        self.conv_features2 = nn.Conv2d(embed_dim, NUM_TOKENS, kernel_size=1, bias=False)
+        self.fc_spec2 = nn.Sequential(
+            nn.Linear(NUM_TOKENS, 32, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Linear(32, NUM_TOKENS, bias=False),
+            nn.Sigmoid(),
+        )
+        self.conv_features3 = nn.Conv2d(embed_dim, NUM_TOKENS, kernel_size=1, bias=False)
+        self.fc_spec3 = nn.Sequential(
+            nn.Linear(NUM_TOKENS, 32, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Linear(32, NUM_TOKENS, bias=False),
+            nn.Sigmoid(),
+        )
+        self.conv_features4 = nn.Conv2d(embed_dim, NUM_TOKENS, kernel_size=1, bias=False)
+        self.fc_spec4 = nn.Sequential(
+            nn.Linear(NUM_TOKENS, 32, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Linear(32, NUM_TOKENS, bias=False),
+            nn.Sigmoid(),
+        )
+        self.pool = nn.AdaptiveAvgPool1d(1)
+
+        self.conv1 =nn.Sequential(
+            nn.Conv2d(NUM_TOKENS, NUM_TOKENS, kernel_size=1),
+            nn.LeakyReLU(0.02),# nn.ReLU(),
+            nn.BatchNorm2d(NUM_TOKENS),
+            nn.Dropout(0.2),
+        )
+        self.conv2 = nn.Sequential(
+            nn.Conv2d(NUM_TOKENS, NUM_TOKENS, kernel_size=1),
+            nn.LeakyReLU(0.02),
+            nn.BatchNorm2d(NUM_TOKENS),
+            nn.Dropout(0.2),
+        )
+        self.conv3 = nn.Sequential(
+            nn.Conv2d(NUM_TOKENS, NUM_TOKENS, kernel_size=3, padding=1),
+            nn.LeakyReLU(0.02),
+            nn.BatchNorm2d(NUM_TOKENS),
+            nn.Dropout(0.2),
+        )
+        self.conv4 = nn.Sequential(
+            nn.Conv2d(NUM_TOKENS, NUM_TOKENS, kernel_size=3, padding=1),
+            nn.LeakyReLU(0.02),
+            nn.BatchNorm2d(NUM_TOKENS),
+            nn.Dropout(0.2),
+        )
+
+        self.conv2_ = nn.Sequential(
+            nn.Conv2d(NUM_TOKENS*2, NUM_TOKENS, kernel_size=3, padding=1),
+            nn.LeakyReLU(0.02),
+            nn.BatchNorm2d(NUM_TOKENS),
+            nn.Dropout(0.2),
+        )
+        self.conv3_ = nn.Sequential(
+            nn.Conv2d(NUM_TOKENS*2, NUM_TOKENS, kernel_size=3, padding=1),
+            nn.LeakyReLU(0.02),
+            nn.BatchNorm2d(NUM_TOKENS),
+            nn.Dropout(0.2),
+        )
+        self.conv4_ = nn.Sequential(
+            nn.Conv2d(NUM_TOKENS*2, NUM_TOKENS, kernel_size=3, padding=1),
+            nn.LeakyReLU(0.02),
+            nn.BatchNorm2d(NUM_TOKENS),
+            nn.Dropout(0.2),
+        )
+        self.smooth = nn.Sequential(
+            nn.Conv2d(NUM_TOKENS*4, NUM_TOKENS*2, kernel_size=(3, 3), padding=1),
+            nn.LeakyReLU(0.02),
+            nn.BatchNorm2d(NUM_TOKENS*2),
+            nn.Dropout(0.2),
+            nn.Conv2d(NUM_TOKENS*2, NUM_TOKENS, kernel_size=(1, 1)) 
+        )
+        self.conv5 = nn.Sequential(
+            nn.Conv2d(NUM_TOKENS, num_em, kernel_size=1),
+            nn.LeakyReLU(0.02),
+            nn.BatchNorm2d(num_em),
+            nn.Dropout(0.2),
+        )
+
+        self.sumtoone = Sum_to_one(scale)
+        self.decoder = Decoder(c=num_em, B=channels)
+
+    def _upsample_add(self, x, y):
+        '''Upsample and add two feature maps.
+        Args:
+        x: (Variable) top feature map to be upsampled.
+        y: (Variable) lateral feature map.
+        Returns:
+        (Variable) added feature map.
+        Note in PyTorch, when input size is odd, the upsampled feature map
+        with `F.upsample(..., scale_factor=2, mode='nearest')`
+        maybe not equal to the lateral feature map size.
+        e.g.
+        original input size: [N,_,15,15] ->
+        conv2d feature map size: [N,_,8,8] ->
+        upsampled feature map size: [N,_,16,16]
+        So we choose bilinear upsample which supports arbitrary output sizes.
+        '''
+        _, _, H, W = y.size()
+        return F.interpolate(x, size=(H, W), mode='bilinear', align_corners=True) + y
+
+    @staticmethod
+    def weights_init(m):
+        if type(m) == nn.Conv2d:
+            nn.init.kaiming_normal_(m.weight.data)
+            nn.init.normal_(m.weight.data, mean=0.0, std=0.3)
+
+    def forward_fusion(self, x):
+        # x: (b, c, h, w)
+        # ts:(b, c)
+        # spat
+        b, _, h, w = x.shape
+        img_features = self.spat_encoder(x)
+
+        img_fea = []
+        ops = [self.conv_features1, self.conv_features2, self.conv_features3, self.conv_features4]
+        for i in range(len(ops)):
+            img_fea.append(ops[i](img_features[i+1]))
+
+        spec_features = self.spec_encoder(x)
+        spec_feature = spec_features[-1]
+        spec_feature = self.pool(spec_feature).view(b, -1) # b, c
+
+        spec_weights = []
+        ops_ = [self.fc_spec1, self.fc_spec2, self.fc_spec3, self.fc_spec4]
+        for i in range(len(ops_)):
+            spec_weights.append((ops_[i](spec_feature)).view(b, -1, 1, 1))
+        ss_feature = []
+        ss_feature.append(x)
+        for i in range(4):
+            ss_feature.append((1 + spec_weights[i]) * img_fea[i])
+        return ss_feature
+
+    def getAbundances(self, x):
+        H, W = x.shape[2], x.shape[3]
+        x = self.forward_fusion(x) # x: list : 5
+        p4 = self.conv1(x[4])
+        p3 = self.conv2(x[3])
+        p2 = self.conv3(x[2])
+        p1 = self.conv4(x[1])
+        p1 = torch.cat([p1,p2,p3,p4], dim=1)
+
+        p1 = F.interpolate(p1, size=(H, W), mode='bilinear', align_corners=True)
+        p1 = self.smooth(p1)
+        x = self.conv5(p1)
+        abunds = self.sumtoone(x)
+        abunds = abunds
+        return abunds
+
+    def forward(self, patch):
+        abunds = self.getAbundances(patch)
+        output = self.decoder(abunds)
+        return abunds,output
+
+    def getEndmembers(self):
+        endmembers = self.decoder.getEndmembers()
+        if endmembers.shape[2] > 1:
+            endmembers = np.squeeze(endmembers).mean(axis=2).mean(axis=2)
+        else:
+            endmembers = np.squeeze(endmembers)
+        return endmembers
+
+def get_hypersigma_features(Y, c):
+    _, B, H, _ = Y.shape
+    features = []
+        
+    img_size, embed_dim, patch_size, NUM_TOKENS, scale = 64, 768, 2, 64, 1
+    hypersigma = HyperSIGMA_Unmix(patch_size=img_size, channels=B, seg_patches=patch_size, NUM_TOKENS=NUM_TOKENS, embed_dim=embed_dim, num_em=c, scale=scale)
+
+    spat_path = "/home/ids/edabier/HSU/HyperSIGMA/HyperspectralUnmixing/data/spat-vit-base-ultra-checkpoint-1599.pth"
+    spec_path = "/home/ids/edabier/HSU/HyperSIGMA/HyperspectralUnmixing/data/spec-vit-base-ultra-checkpoint-1599.pth"
+    Spat_pernet = torch.load(spat_path, map_location=torch.device('cpu'), weights_only=False)
+    Spat_pernet = Spat_pernet['model']
+    for k in list(Spat_pernet.keys()):
+        if 'patch_embed.proj' in k:
+            del Spat_pernet[k]
+    for k in list(Spat_pernet.keys()):
+        k_ = 'spat_encoder.' + k
+        Spat_pernet[k_] = Spat_pernet.pop(k)
+
+    Spec_pernet = torch.load(spec_path, map_location=torch.device('cpu'), weights_only=False)
+    Spec_pernet = Spec_pernet['model']
+    for k in list(Spec_pernet.keys()):
+        if 'spec' in k:
+            del Spec_pernet[k]
+        if 'spat' in k:
+            del Spec_pernet[k]
+    for k in list(Spec_pernet.keys()):
+        k_ = 'spec_encoder.' + k
+        Spec_pernet[k_] = Spec_pernet.pop(k)
+
+    model_params = hypersigma.state_dict()
+    same_parsms = {k: v for k, v in Spat_pernet.items() if k in model_params.keys()}
+    model_params.update(same_parsms)
+    hypersigma.load_state_dict(model_params)
+
+    same_parsms = {k: v for k, v in Spec_pernet.items() if k in model_params.keys()}
+    model_params.update(same_parsms)
+    hypersigma.load_state_dict(model_params)
+
+    # loop over H to extract features from patches of size 64
+    current_patch = 0
+    while current_patch < H:
+
+        patch = Y[:, :, current_patch:current_patch+64, current_patch:current_patch+64]
+        
+        if patch.shape[-1] != 64:
+            dif = 64 - patch.shape[-1]
+            patch = F.pad(
+                patch,
+                (0, dif, 0, dif),
+                mode='reflect'
+            )
+
+        current_features = hypersigma.forward_fusion(patch)[-1]
+        features.append(current_features)
+        current_patch += 64
+    merged_features = torch.sum(torch.stack(features), dim=0)
+    return merged_features
+
+def get_dofa_features(Y, wavelengths, four_features=False):
+    check_point = torch.load('/home/ids/edabier/HSU/DOFA/checkpoints/DOFA_ViT_base_e100.pth', map_location=dev)
+    dofa = vit_base_patch16(four_features=four_features)
+    dofa.load_state_dict(check_point, strict=False)
+    features = dofa.forward_features(Y, wavelengths)
+    return features
 
 class FoundationModel(nn.Module):
     def __init__(self, model_name, patch_size=None, im_size=None, channels=None, n_em=None, wavelengths=None):
@@ -233,15 +501,23 @@ class FoundationModel(nn.Module):
     def get_adapter_size(self):
         print("Adapter has", sum(p.numel() for p in self.encoder.parameters() if p.requires_grad + p.numel() for p in self.decoder.parameters() if p.requires_grad)/1e3, "k params")
 
-def features_comparison(Y_gt, Y_hat):
+def features_comparison(model_name, Y_gt, Y_hat, wavelengths=None, c=None):
     """
-    TO DO: write a function that computes the similarity between the features
-    Extracted from Y_gt and those extraced from Y_hat by some RSFM
-    Use Feed or LIPS metrics?
+    computes the L2 norm between the features extracted from Y_gt 
+    and those extraced from Y_hat by some RSFM
     """
-    
-    
-    pass
+    mse = nn.MSELoss()
+    sad = utils.SADLoss()
+
+    if model_name == "DOFA":
+        features = get_dofa_features(Y_gt, wavelengths)
+        features_hat = get_dofa_features(Y_hat, wavelengths)
+    elif model_name == "HyperSIGMA":
+        features = get_hypersigma_features(Y_gt, c)
+        features_hat = get_hypersigma_features(Y_hat, c)
+
+    sim = sad(features, features_hat)
+    return sim
 
 class Weight_constraint(object):
     def __init__(self):
@@ -274,56 +550,96 @@ class Decoder(nn.Module):
     def get_endmembers(self):
         return self.decoder.weight.data.squeeze([2, 3])
     
+class UpsampleBlock(nn.Module):
+    def __init__(self, in_channels, out_channels, kernel_size):
+        super().__init__()
+        self.conv_transpose = nn.ConvTranspose2d(
+            in_channels,
+            out_channels,
+            kernel_size=kernel_size,
+            stride=1,
+            padding=0,
+            bias=False
+        )
+
+    def forward(self, x):
+        return self.conv_transpose(x)
+
 class Unmixing_from_features(nn.Module):
-    def __init__(self, D, B, c):
+    def __init__(self, D, p, B, c, n_features=1, upsample_twice=False):
         super(Unmixing_from_features, self).__init__()
         self.D = D
         self.B = B
         self.c = c
+        self.n_features = n_features
+        self.upsample_twice = upsample_twice
 
-        self.upsample = nn.ConvTranspose2d( # upsamples 14 -> 224
-            in_channels=4*D,
-            out_channels=4*D,
-            kernel_size=3,
-            stride=17,
-            padding=0,
+        self.upsample = nn.Sequential(
+            nn.Linear(self.n_features*(p**2), 224**2)
         )
 
-        self.conv1 = nn.Sequential(
-            nn.Conv2d(D*4, D*2, kernel_size=(3, 3), padding=1),
-            nn.LeakyReLU(0.02),
-            nn.BatchNorm2d(D*2),
-            nn.Dropout(0.2),
-            nn.Conv2d(D*2,  D, kernel_size=(1, 1)) )
-        self.conv2 = nn.Sequential(
+        # self.upsample = nn.Sequential(
+        #     UpsampleBlock(1, 1, kernel_size=45),
+        #     UpsampleBlock(1, 1, kernel_size=45),
+        #     UpsampleBlock(1, 1, kernel_size=45),
+        #     UpsampleBlock(1, 1, kernel_size=45),
+        #     UpsampleBlock(1, 1, kernel_size=35),
+        # )
+
+        self.smooth = nn.Sequential(
+            nn.Conv2d(c, c, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1)),
+            nn.Softmax(dim=1),
+        )
+
+        self.abundance_estimator = nn.Sequential(
             nn.Conv2d(D, c, kernel_size=1),
             nn.LeakyReLU(0.02),
             nn.BatchNorm2d(c),
-            nn.Dropout(0.2),
+            nn.Dropout(0.2)
         )
 
         self.sum_to_one = Sum_to_one()
         self.decoder = Decoder(B=B, c=c)
 
     @staticmethod
-    def loss(Y_gt, Y_hat, A_hat, E_hat, W_ab=0.35, W_tv=0.1):
+    def loss(Y_gt, Y_hat, A_hat, E_hat, W_sad=1, W_ab=0.35, W_tv=0.1, W_mse=0):
         sad = utils.SADLoss()
+        mse = nn.MSELoss(reduction='mean')
+        
         loss_sad = sad(Y_gt, Y_hat)
-        loss_ab = W_ab * torch.sqrt(A_hat).mean()
-        loss_tv = W_tv * (torch.abs(E_hat[:, 1:] - E_hat[:, :(-1)]).sum())
-        loss = 100*loss_sad + loss_ab + loss_tv
+        loss_ab = torch.sqrt(A_hat).mean()
+        loss_tv = (torch.abs(E_hat[:, 1:] - E_hat[:, :(-1)]).sum())
+        loss_mse = mse(Y_gt, Y_hat)
+
+        loss = W_sad * loss_sad + W_ab * loss_ab + W_tv * loss_tv + W_mse * loss_mse 
+
         return loss
     
     def get_abundances(self, features):
 
         H_p = W_p = int(features.shape[1] ** 0.5)
         features_2d = features.view(
-            1, 4*self.D, H_p, W_p
+            self.D, int(self.n_features**0.5)*H_p, int(self.n_features**0.5)*W_p
         )
-        features_up = self.upsample(features_2d)
-        patch_D = self.conv1(features_up)
-        A_hat   = self.conv2(patch_D)
-        A_hat   = self.sum_to_one(A_hat)
+
+        # features_up = self.upsample(features.reshape(self.D, 1, H_p, W_p))
+
+        # if self.upsample_twice:
+        #     features_up = F.interpolate(features_2d.unsqueeze(1), size=(112, 112), mode='bilinear', align_corners=False)
+        #     features_up = F.interpolate(features_up, size=(224, 224), mode='bilinear', align_corners=False)
+        # else:
+        #     features_up = F.interpolate(features_2d.unsqueeze(1), size=(224, 224), mode='bilinear', align_corners=False)
+        # features_up = features_up.reshape(1, self.D, 224, 224)
+
+        features = features.reshape(self.D, self.n_features*H_p*W_p)
+        features_up = self.upsample(features)
+        features_up = features_up.view(
+            1, self.D, 224, 224
+        )
+
+        A_hat = self.abundance_estimator(features_up)
+        A_hat = self.smooth(A_hat)
+        A_hat = self.sum_to_one(A_hat)
 
         return A_hat
     
@@ -331,9 +647,6 @@ class Unmixing_from_features(nn.Module):
         A_hat = self.get_abundances(features)
         Y_hat = self.decoder(A_hat)
         E_hat = self.decoder.get_endmembers()
-
-        # Y_hat = Y_hat.reshape(1, self.B, 224**2)
-        # A_hat = A_hat.reshape(1, self.c, 224**2)
 
         return E_hat, A_hat, Y_hat
 
