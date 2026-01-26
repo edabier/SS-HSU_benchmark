@@ -10,6 +10,7 @@ import gc
 import src.utils.utils as utils
 import src.models.models as models
 import src.training.self_supervision as ssl
+import src.training.training as training
 import src.utils.extractor as extractor
 
 def run_one_xp(mses, sads, n, Y_init, B, c, N, H, loader, dataset, args, dev):
@@ -56,9 +57,9 @@ def run_one_xp(mses, sads, n, Y_init, B, c, N, H, loader, dataset, args, dev):
         print(f"Training {model_name}")
 
         if model_name == "UnDIP" or "NALMU" in model_name or "RALMU" in model_name:
-            e_hat, a_hat, train_losses = ssl.train(model, loader, has_decoder=False, epochs=args.epochs, lr=args.lr, dev=dev)
+            e_hat, a_hat, train_losses = training.train(model, loader, has_decoder=False, epochs=args.epochs, lr=args.lr, dev=dev)
         else:
-            e_hat, a_hat, train_losses = ssl.train(model, loader, patch_size=args.patch_size, has_decoder=True, epochs=args.epochs, lr=args.lr, dev=dev)
+            e_hat, a_hat, train_losses = training.train(model, loader, patch_size=args.patch_size, has_decoder=True, epochs=args.epochs, lr=args.lr, dev=dev)
 
         fig = plt.figure()
         plt.plot(train_losses)

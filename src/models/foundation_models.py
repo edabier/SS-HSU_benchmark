@@ -566,37 +566,54 @@ class UpsampleBlock(nn.Module):
         return self.conv_transpose(x)
 
 class Unmixing_from_features(nn.Module):
-    def __init__(self, D, p, B, c, n_features=1, upsample_twice=False):
+    def __init__(self, D, p, B, c, n_features=1, use_cls=False, hypersig=False, upsample_twice=False):
         super(Unmixing_from_features, self).__init__()
         self.D = D
+        self.p = p
         self.B = B
         self.c = c
         self.n_features = n_features
+        self.use_cls = use_cls
+        self.hypersig = hypersig
         self.upsample_twice = upsample_twice
 
-        self.upsample = nn.Sequential(
-            nn.Linear(self.n_features*(p**2), 224**2)
-        )
-
-        # self.upsample = nn.Sequential(
-        #     UpsampleBlock(1, 1, kernel_size=45),
-        #     UpsampleBlock(1, 1, kernel_size=45),
-        #     UpsampleBlock(1, 1, kernel_size=45),
-        #     UpsampleBlock(1, 1, kernel_size=45),
-        #     UpsampleBlock(1, 1, kernel_size=35),
-        # )
+        if self.use_cls:
+            self.upsample = nn.Sequential(
+                nn.Linear(int(D/c), 224**2)
+            )
+        elif self.hypersig:
+            self.upsample = nn.Sequential(
+                nn.Linear(p**2, 224**2)
+            )        
+        else:
+            self.upsample = nn.Sequential(
+                nn.Linear(self.n_features*(p**2), 224**2)
+            )
 
         self.smooth = nn.Sequential(
             nn.Conv2d(c, c, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1)),
             nn.Softmax(dim=1),
         )
 
-        self.abundance_estimator = nn.Sequential(
+        if self.hypersig:
+            self.abundance_estimator = nn.Sequential(
+            nn.Conv2d(D*4, D*2, kernel_size=(3, 3), padding=1),
+            nn.LeakyReLU(0.02),
+            nn.BatchNorm2d(D*2),
+            nn.Dropout(0.2),
+            nn.Conv2d(D*2,  D, kernel_size=(1, 1)),
             nn.Conv2d(D, c, kernel_size=1),
             nn.LeakyReLU(0.02),
             nn.BatchNorm2d(c),
             nn.Dropout(0.2)
-        )
+            )
+        else:
+            self.abundance_estimator = nn.Sequential(
+                nn.Conv2d(D, c, kernel_size=1),
+                nn.LeakyReLU(0.02),
+                nn.BatchNorm2d(c),
+                nn.Dropout(0.2)
+            )
 
         self.sum_to_one = Sum_to_one()
         self.decoder = Decoder(B=B, c=c)
@@ -609,7 +626,7 @@ class Unmixing_from_features(nn.Module):
         loss_sad = sad(Y_gt, Y_hat)
         loss_ab = torch.sqrt(A_hat).mean()
         loss_tv = (torch.abs(E_hat[:, 1:] - E_hat[:, :(-1)]).sum())
-        loss_mse = mse(Y_gt, Y_hat)
+        loss_mse = mse(Y_gt, Y_hat)/(torch.norm(Y_gt)**2)
 
         loss = W_sad * loss_sad + W_ab * loss_ab + W_tv * loss_tv + W_mse * loss_mse 
 
@@ -617,27 +634,41 @@ class Unmixing_from_features(nn.Module):
     
     def get_abundances(self, features):
 
-        H_p = W_p = int(features.shape[1] ** 0.5)
-        features_2d = features.view(
-            self.D, int(self.n_features**0.5)*H_p, int(self.n_features**0.5)*W_p
-        )
+        if self.use_cls:
+            features_2d = features.reshape(self.c, int(self.D/self.c))
+            features_up = self.upsample(features_2d)
+            A_hat = features_up.reshape(1, self.c, 224, 224)
 
-        # features_up = self.upsample(features.reshape(self.D, 1, H_p, W_p))
+        elif self.hypersig:
+            features_up = self.upsample(features)
+            features_up = features_up.view(
+                1, 4*self.D, 224, 224
+            )
 
-        # if self.upsample_twice:
-        #     features_up = F.interpolate(features_2d.unsqueeze(1), size=(112, 112), mode='bilinear', align_corners=False)
-        #     features_up = F.interpolate(features_up, size=(224, 224), mode='bilinear', align_corners=False)
-        # else:
-        #     features_up = F.interpolate(features_2d.unsqueeze(1), size=(224, 224), mode='bilinear', align_corners=False)
-        # features_up = features_up.reshape(1, self.D, 224, 224)
+            A_hat = self.abundance_estimator(features_up)
 
-        features = features.reshape(self.D, self.n_features*H_p*W_p)
-        features_up = self.upsample(features)
-        features_up = features_up.view(
-            1, self.D, 224, 224
-        )
+        else:
+            features_2d = features.view(
+                self.D, int(self.n_features**0.5)*self.p, int(self.n_features**0.5)*self.p
+            )
 
-        A_hat = self.abundance_estimator(features_up)
+            # features_up = self.upsample(features.reshape(self.D, 1, self.p, self.p))
+
+            # if self.upsample_twice:
+            #     features_up = F.interpolate(features_2d.unsqueeze(1), size=(112, 112), mode='bilinear', align_corners=False)
+            #     features_up = F.interpolate(features_up, size=(224, 224), mode='bilinear', align_corners=False)
+            # else:
+            #     features_up = F.interpolate(features_2d.unsqueeze(1), size=(224, 224), mode='bilinear', align_corners=False)
+            # features_up = features_up.reshape(1, self.D, 224, 224)
+
+            features = features.reshape(self.D, self.n_features*self.p*self.p)
+            features_up = self.upsample(features)
+            features_up = features_up.view(
+                1, self.D, 224, 224
+            )
+
+            A_hat = self.abundance_estimator(features_up)
+
         A_hat = self.smooth(A_hat)
         A_hat = self.sum_to_one(A_hat)
 
@@ -675,9 +706,9 @@ class Unmixing_from_features(nn.Module):
     
 #     def abundances_from_features(self, features):
 
-#         H_p = W_p = int(features.shape[1] ** 0.5)
+#         self.p = self.p = int(features.shape[1] ** 0.5)
 #         features_2d = features.view(
-#             1, 4*self.D, H_p, W_p
+#             1, 4*self.D, self.p, self.p
 #         )
 #         features_up = F.interpolate(
 #             features_2d,

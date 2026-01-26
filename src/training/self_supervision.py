@@ -14,59 +14,6 @@ import src.models.models as models
 directory = "/home/ids/edabier/HSU/SS-HSU_benchmark/models"
 # directory = "models/"
 
-def train(model, dataloader, patch_size=None, has_decoder=True, epochs=320, lr=0.003, dev="cpu"):
-    model_name = model.__class__.__name__
-    if model_name == "NALMU" or model_name == "RALMU":
-        model_name += str(model.T)
-
-    optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
-    train_losses = []
-    for epoch in range(epochs):
-        
-        train_loss = 0
-        
-        for Y, E, A in dataloader:
-            optimizer.zero_grad()
-            
-            Y = Y.to(dev)
-            E = E.to(dev)
-            A = A.to(dev)
-
-            if model_name == "DeepTrans":
-                Y, A = utils.crop_patch_image(Y, patch_size, A)
-            
-            if "NALMU" in model_name or "RALMU" in model_name:
-                A_init_disp = A.to(torch.float32)
-                E_init_disp = torch.ones(E.size(),dtype=torch.float32)
-                A_init = torch.ones_like(A_init_disp)
-                E_init = torch.ones_like(E_init_disp)
-                e_hat, a_hat, y_hat = model(Y, E_init=E_init, A_init=A_init)
-            else:
-                e_hat, a_hat, y_hat = model(Y)
-            
-            loss = model.loss(E, e_hat, A, a_hat, Y, y_hat)
-            train_loss += loss.item()
-            
-            loss.backward()
-            optimizer.step()
-            
-            if has_decoder:
-                with torch.no_grad():
-                    model.decoder.apply(models.weightConstraint())
-    
-        train_loss /= len(dataloader)
-        train_losses.append(train_loss)
-        
-        try:
-            dataset_name = dataloader.dataset.dataset_name
-        except:
-            dataset_name = dataloader.dataset.dataset.dataset_name
-
-        # Save checkpoint
-        utils.save_model(model, optimizer, directory=directory, name=f"BASIC_{dataset_name}", epoch=epoch)
-            
-    return e_hat, a_hat, train_losses
-    
 class SupervisedTrainer():
     """
     Defines a supervised training method

@@ -265,17 +265,22 @@ def compute_metrics_and_plot(e_hat, e_gt, a_hat, a_gt, name=None, use_wandb=Fals
 
     return Average_MSE, Average_SAD
 
-def compute_metrics(E_gt, A_gt, E_hat, A_hat):
+def compute_metrics(E_gt, A_gt, E_hat, A_hat, Y_gt=None, Y_hat=None):
     
     sad = SADLoss()
     mse = nn.MSELoss(reduction='sum')
     
     metric_A = mse(A_gt, A_hat)/(torch.norm(A_gt)**2)
     metric_E = sad(E_gt, E_hat)
-    
-    return metric_A, metric_E
 
-def plot_results(E_hat, A_hat, A_gt=None, E_gt=None, model_name=None):
+    if Y_gt is not None:
+        metric_re = mse(Y_gt, Y_hat)/(torch.norm(Y_gt)**2)
+    
+        return metric_A, metric_E, metric_re
+    else:
+        return metric_A, metric_E
+
+def plot_results(E_hat, A_hat, A_gt=None, E_gt=None, model_name=None, normalize_E=False, normalize_A=False, plot_only_E=False, plot_only_A=False):
     """
     Displays the predicted endmembers and abundances
     """
@@ -296,69 +301,102 @@ def plot_results(E_hat, A_hat, A_gt=None, E_gt=None, model_name=None):
     n_graph = c // 2
     if c % 2 != 0: n_graph = n_graph + 1
 
-    if E_gt is not None:
+    if not plot_only_A:
+        if E_gt is not None:
 
-        E_hat, _, A_hat, _ = order_endmembers(E_gt, E_hat, A_hat)
+            E_hat, _, A_hat, _ = order_endmembers(E_gt, E_hat, A_hat)
+            
+            if normalize_E:
+                E_hat = normalize(E_hat, dim=1)
+                E_gt = normalize(E_gt, dim=1)
 
-        if E_gt.dim() == 3:
-            E_gt = E_gt.squeeze(0)
-
-        fig, axes = plt.subplots(2, n_graph)
-        axes = axes.flatten()
-        if model_name is not None:
-            plt.suptitle(f'{model_name} Endmember estimation')
+            fig, axes = plt.subplots(2, n_graph)
+            axes = axes.flatten()
+            if model_name is not None:
+                plt.suptitle(f'{model_name} Endmember estimation')
+            else:
+                plt.suptitle('Endmember estimation')
+            for i in range(c):
+                ax = axes[i]
+                ax.plot(E_gt[:, i].detach().cpu(), 'r', linewidth=1.0, label='GT')
+                ax.plot(E_hat[:, i].detach().cpu(), 'k-', linewidth=1.0, label='predict')
+                if i == 0:
+                    plt.legend() 
+            for j in range(i + 1, len(axes)):
+                axes[j].axis('off')
+            
+            sad = SADLoss()
+            print(f"SAD(E, E_hat) = {format(sad(E_gt, E_hat), '.3f')}")
         else:
-            plt.suptitle('Endmember estimation')
-        for i in range(c):
-            ax = axes[i]
-            ax.plot(E_gt[:, i].detach().cpu(), 'r', linewidth=1.0, label='GT')
-            ax.plot(E_hat[:, i].detach().cpu(), 'k-', linewidth=1.0, label='predict')
-            if i == 0:
-                plt.legend() 
-        for j in range(i + 1, len(axes)):
-            axes[j].axis('off')
-        
-        sad = SADLoss()
-        print(f"SAD(E, E_hat) = {format(sad(E_gt, E_hat), '.3f')}")
-    else:
-        if model_name is not None:
-            plt.suptitle(f'{model_name} Endmember estimation')
-        else:
-            plt.suptitle('Endmember estimation')
-        for i in range(c):
-            ax = plt.subplot(2, n_graph, i + 1)
-            plt.plot(E_hat[:, i].detach().cpu(), 'k-', linewidth=1.0, label='predict')
+            if model_name is not None:
+                plt.suptitle(f'{model_name} Endmember estimation')
+            else:
+                plt.suptitle('Endmember estimation')
+            for i in range(c):
+                ax = plt.subplot(2, n_graph, i + 1)
+                plt.plot(E_hat[:, i].detach().cpu(), 'k-', linewidth=1.0, label='predict')
 
-    if A_gt is not None:
-        fig, axes = plt.subplots(2, A_hat.shape[0], figsize=(10, 5))
-        if model_name is not None:
-            plt.suptitle(f'{model_name} abundance estimation')
-        else:
-            plt.suptitle('Abundance estimation')
-        axes[0, 0].set_title(f"Prediction", fontsize=12)
-        axes[1, 0].set_title(f"GT", fontsize=12)
-        for i in range(A_hat.shape[0]):
-            pred = axes[0, i].imshow(A_hat[i].detach().cpu())
-            axes[0, i].axis('off')
+    if not plot_only_E:
+        if A_gt is not None:
 
-            gt = axes[1, i].imshow(A_gt[i].detach().cpu())
-            axes[1, i].axis('off')
-        bar = plt.colorbar(gt)
-        bar = plt.colorbar(pred)
+            if normalize_A:
+                A_hat = normalize(A_hat)
 
-        mse = nn.MSELoss(reduction="sum")
-        print(f"MSE(A, A_hat) = {format(mse(A_gt, A_hat)/torch.norm(A_gt)**2, '.3f')}")
-    else:
-        fig, axes = plt.subplots(1, A_hat.shape[0], figsize=(10, 5))
-        if model_name is not None:
-            plt.suptitle(f'{model_name} abundance estimation')
+            fig, axes = plt.subplots(2, A_hat.shape[0], figsize=(10, 5))
+            if model_name is not None:
+                plt.suptitle(f'{model_name} abundance estimation')
+            else:
+                plt.suptitle('Abundance estimation')
+            axes[0, 0].set_title(f"Prediction", fontsize=12)
+            axes[1, 0].set_title(f"GT", fontsize=12)
+            for i in range(A_hat.shape[0]):
+                pred = axes[0, i].imshow(A_hat[i].detach().cpu())
+                axes[0, i].axis('off')
+
+                gt = axes[1, i].imshow(A_gt[i].detach().cpu())
+                axes[1, i].axis('off')
+            bar = plt.colorbar(gt)
+            bar = plt.colorbar(pred)
+
+            mse = nn.MSELoss(reduction="sum")
+            print(f"MSE(A, A_hat) = {format(mse(A_gt, A_hat)/torch.norm(A_gt)**2, '.3f')}")
         else:
-            plt.suptitle('Abundance estimation')
-        axes[0].set_title(f"Prediction", fontsize=12)
-        for i in range(A_hat.shape[0]):
-            pred = axes[i].imshow(A_hat[i].detach().cpu())
-            axes[i].axis('off')
-        bar = plt.colorbar(pred)
+            fig, axes = plt.subplots(1, A_hat.shape[0], figsize=(10, 5))
+            if model_name is not None:
+                plt.suptitle(f'{model_name} abundance estimation')
+            else:
+                plt.suptitle('Abundance estimation')
+            axes[0].set_title(f"Prediction", fontsize=12)
+            for i in range(A_hat.shape[0]):
+                pred = axes[i].imshow(A_hat[i].detach().cpu())
+                axes[i].axis('off')
+            bar = plt.colorbar(pred)
+
+def compare_hsis(Y_gt, Y_hat, title=None):
+    """
+    Displays the first 4 channels of both reconstructed and groundtruth HSIs
+    Must be of shape (batch, B, H, W) or (B, H, W)
+    """
+    if Y_gt.dim() > 3:
+        Y_gt = Y_gt.squeeze(0)
+    if Y_hat.dim() > 3:
+        Y_hat = Y_hat.squeeze(0)
+
+    fig, axes = plt.subplots(2, 4, figsize=(10, 5))
+    B, H, W = Y_gt.shape
+    axes[0, 0].set_title(f"Prediction", fontsize=12)
+    axes[1, 0].set_title(f"GT", fontsize=12)
+    for i in range(4):
+        i_th = int((i/4)*B)
+        pred = axes[0, i].imshow(Y_hat[i_th].detach().cpu())
+        axes[0, i].axis('off')
+
+        gt = axes[1, i].imshow(Y_gt[i_th].detach().cpu())
+        axes[1, i].axis('off')
+    if title is not None:
+        plt.suptitle(title)
+    bar = plt.colorbar(gt)
+    bar = plt.colorbar(pred)
 
 def test_model(model, test_loader, wandb=False):
     """
@@ -456,11 +494,27 @@ def oneD_to_2d(Y):
 def normalize(Y, dim=0):
     """
     Normalizes the input tensor along the given dimension
+    For abundances, must be of shape (c, H, W)
+    For endmembers, must be of shape (B, c)
     """
-    shape = Y.shape
-    max_values = torch.amax(torch.abs(Y), dim=[d for d in range(Y.dim()) if d != dim], keepdim=True)
-    max_values[max_values == 0] = 1
-    Y_normalized = Y / max_values
+    # shape = Y.shape
+
+    # In the case of abundances/ HSIs
+    if Y.dim() == 3:
+        max_values = torch.amax(torch.abs(Y), dim=[d for d in range(Y.dim()) if d != dim], keepdim=True)
+        max_values[max_values == 0] = 1
+        Y_normalized = Y / max_values
+        # c, H, W = Y.shape
+        # Y_reshaped = Y.reshape(c, H*W)
+        # max_vals = Y_reshaped.max(dim=1)[0].view(c, 1, 1)
+        # eps = 1e-8
+        # Y_normalized = Y / (max_vals + eps)
+        # Y_normalized = torch.clamp(Y_normalized, 0, 1)
+
+    elif Y.dim() == 2:
+        max_values = torch.amax(torch.abs(Y), dim=[d for d in range(Y.dim()) if d != dim], keepdim=True)
+        max_values[max_values == 0] = 1
+        Y_normalized = Y / max_values
 
     return Y_normalized
 

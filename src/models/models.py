@@ -135,6 +135,26 @@ class CNNAEU(nn.Module, HSUModel):
         
         return e_hat, a_hat, x_hat
 
+class SAD(nn.Module):
+    def __init__(self, num_bands):
+        super(SAD, self).__init__()
+        self.num_bands = num_bands
+
+    def forward(self, inp, target):
+        try:
+            input_norm = torch.sqrt(torch.bmm(inp.view(-1, 1, self.num_bands),
+                                              inp.view(-1, self.num_bands, 1)))
+            target_norm = torch.sqrt(torch.bmm(target.view(-1, 1, self.num_bands),
+                                               target.view(-1, self.num_bands, 1)))
+
+            summation = torch.bmm(inp.view(-1, 1, self.num_bands), target.view(-1, self.num_bands, 1))
+            angle = torch.acos(summation / (input_norm * target_norm))
+
+        except ValueError:
+            return 0.0
+
+        return angle
+
 class DeepTrans(nn.Module, HSUModel):
     """
     Args:
@@ -182,13 +202,23 @@ class DeepTrans(nn.Module, HSUModel):
             nn.init.kaiming_normal_(m.weight.data)
 
     @staticmethod
-    def loss(E_gt, E_hat, A_gt, A_hat, Y_gt, Y_hat, alpha=4e3, beta=5e-2):
-        mse = nn.MSELoss(reduction="sum")
-        sad = utils.SADLoss()
+    def loss(E_gt=None, E_hat=None, A_gt=None, A_hat=None, Y_gt=None, Y_hat=None, alpha=4e3, beta=5e-2):
+        # mse = nn.MSELoss(reduction="sum")
+        # sad = utils.SADLoss()
 
-        loss_re = alpha * mse(Y_gt, Y_hat)
-        loss_sad = beta * sad(Y_gt, Y_hat)
-        return loss_re + loss_sad
+        # loss_re = alpha * mse(Y_gt, Y_hat)
+        # loss_sad = beta * sad(Y_gt, Y_hat)
+        # return loss_re + loss_sad
+        B = Y_gt.shape[1]
+        loss_func = nn.MSELoss(reduction='mean')
+        loss_func2 = SAD(B)
+        loss_re = alpha * loss_func(Y_hat, Y_gt)
+        loss_sad = loss_func2(Y_hat.view(1, B, -1).transpose(1, 2),
+                                Y_gt.view(1, B, -1).transpose(1, 2))
+        loss_sad = beta * torch.sum(loss_sad).float()
+
+        total_loss = loss_re + loss_sad
+        return total_loss
 
     def forward(self, x):
         # Input shape (batch, B, N*) with N*=H*²
@@ -197,13 +227,26 @@ class DeepTrans(nn.Module, HSUModel):
         # E: (batch, B, c)
         # A: (batch, c, N)
         
-        if x.dim() < 3:
-            x = x.unsqueeze(0) # Add a batch dimension for inference
+        # if x.dim() < 3:
+        #     x = x.unsqueeze(0) # Add a batch dimension for inference
 
-        batch, patch, N = x.shape
-        x = utils.oneD_to_2d(x)
+        # batch, patch, N = x.shape
+        # x = utils.oneD_to_2d(x)
 
+        # abu_est = self.encoder(x)
+        # cls_emb = self.vtrans(abu_est)
+        # cls_emb = cls_emb.view(1, self.c, -1)
+        # abu_est = self.upscale(cls_emb).view(1, self.c, self.im_size, self.im_size)
+        # abu_est = self.smooth(abu_est)
+        # re_result = self.decoder(abu_est)
+        
+        # e_est = self.decoder[0].weight.detach()[:,:,0,0]
+        # e_est = e_est.reshape(batch, self.B, self.c)
+        
+        # abu_est = abu_est.reshape(batch, self.c, N)
+        # re_result = re_result.reshape(batch, self.B, N)
         abu_est = self.encoder(x)
+        abu_est = abu_est.reshape(1, self.c, self.im_size, self.im_size)
         cls_emb = self.vtrans(abu_est)
         cls_emb = cls_emb.view(1, self.c, -1)
         abu_est = self.upscale(cls_emb).view(1, self.c, self.im_size, self.im_size)
@@ -211,10 +254,100 @@ class DeepTrans(nn.Module, HSUModel):
         re_result = self.decoder(abu_est)
         
         e_est = self.decoder[0].weight.detach()[:,:,0,0]
-        e_est = e_est.reshape(batch, self.B, self.c)
+        e_est = e_est.reshape(1, self.B, self.c)
         
-        abu_est = abu_est.reshape(batch, self.c, N)
-        re_result = re_result.reshape(batch, self.B, N)
+        abu_est = abu_est.reshape(1, self.c, self.im_size**2)
+        re_result = re_result.reshape(1, self.B, self.im_size**2)
+        
+        return e_est, abu_est, re_result
+
+class DeepTransDOFA(nn.Module, HSUModel):
+    """
+    Args:
+        B (int): the number of spectral bands
+        c (int): the number of endmembers
+        im_size (int): the height (or width) of the image (expects square image)
+        patch_size (int, optional): how much to split the input image (default: 5)
+        embed_dim (int, optional): the dimension of the features extracted 
+    """
+    def __init__(self, B, c, im_size, patch_size=5, embed_dim=24, use_cls=False):
+        super(DeepTransDOFA, self).__init__()
+        self.B, self.c, self.im_size, self.embed_dim = B, c, im_size, embed_dim
+        self.patch_size, self.use_cls = patch_size, use_cls
+
+        if self.use_cls:
+            self.encoder = nn.Sequential(
+                nn.Linear(int(768/c), self.im_size**2)
+            )
+        else:
+            self.upsample = nn.Linear(14*14, im_size ** 2)
+            self.encoder = nn.Sequential(
+                nn.Conv2d(768, c, kernel_size=1),
+                nn.LeakyReLU(0.02),
+                nn.BatchNorm2d(c),
+                nn.Dropout(0.2)
+            )
+
+        self.vtrans = transformer.ViT(image_size=im_size, patch_size=patch_size, embed_dim=(embed_dim*c), depth=2,
+                                      heads=8, mlp_dim=12, pool='cls')
+        
+        self.upscale = nn.Sequential(
+            nn.Linear(embed_dim, im_size ** 2),
+        )
+        
+        self.smooth = nn.Sequential(
+            nn.Conv2d(c, c, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1)),
+            nn.Softmax(dim=1),
+        )
+
+        self.decoder = nn.Sequential(
+            nn.Conv2d(c, B, kernel_size=(1, 1), stride=(1, 1), bias=False),
+            nn.ReLU(),
+        )
+
+    @staticmethod
+    def weights_init(m):
+        if type(m) == nn.Conv2d:
+            nn.init.kaiming_normal_(m.weight.data)
+
+    @staticmethod
+    def loss(E_gt=None, E_hat=None, A_gt=None, A_hat=None, Y_gt=None, Y_hat=None, alpha=4e3, beta=5e-2):
+
+        B = Y_gt.shape[1]
+        loss_func = nn.MSELoss(reduction='mean')
+        loss_func2 = SAD(B)
+        loss_re = alpha * loss_func(Y_hat, Y_gt)
+        loss_sad = loss_func2(Y_hat.view(1, B, -1).transpose(1, 2),
+                                Y_gt.view(1, B, -1).transpose(1, 2))
+        loss_sad = beta * torch.sum(loss_sad).float()
+
+        total_loss = loss_re + loss_sad
+        return total_loss
+
+    def forward(self, features):
+        # Input shape (1, D) 
+        # Output shapes Y: (batch, B, N)
+        # E: (batch, B, c)
+        # A: (batch, c, N)
+        if self.use_cls:
+            features_2d = features.reshape(self.c, int(768/self.c))
+            abu_est = self.encoder(features_2d)
+        else:
+            features_up = self.upsample(features).reshape(1, 768, 224, 224)
+            abu_est = self.encoder(features_up)
+
+        abu_est = abu_est.reshape(1, self.c, self.im_size, self.im_size)
+        cls_emb = self.vtrans(abu_est)
+        cls_emb = cls_emb.view(1, self.c, -1)
+        abu_est = self.upscale(cls_emb).view(1, self.c, self.im_size, self.im_size)
+        abu_est = self.smooth(abu_est)
+        re_result = self.decoder(abu_est)
+        
+        e_est = self.decoder[0].weight.detach()[:,:,0,0]
+        e_est = e_est.reshape(1, self.B, self.c)
+        
+        abu_est = abu_est.reshape(1, self.c, self.im_size**2)
+        re_result = re_result.reshape(1, self.B, self.im_size**2)
         
         return e_est, abu_est, re_result
 
