@@ -227,24 +227,9 @@ class DeepTrans(nn.Module, HSUModel):
         # E: (batch, B, c)
         # A: (batch, c, N)
         
-        # if x.dim() < 3:
-        #     x = x.unsqueeze(0) # Add a batch dimension for inference
+        if x.dim() < 3:
+            x = x.unsqueeze(0) # Add a batch dimension for inference
 
-        # batch, patch, N = x.shape
-        # x = utils.oneD_to_2d(x)
-
-        # abu_est = self.encoder(x)
-        # cls_emb = self.vtrans(abu_est)
-        # cls_emb = cls_emb.view(1, self.c, -1)
-        # abu_est = self.upscale(cls_emb).view(1, self.c, self.im_size, self.im_size)
-        # abu_est = self.smooth(abu_est)
-        # re_result = self.decoder(abu_est)
-        
-        # e_est = self.decoder[0].weight.detach()[:,:,0,0]
-        # e_est = e_est.reshape(batch, self.B, self.c)
-        
-        # abu_est = abu_est.reshape(batch, self.c, N)
-        # re_result = re_result.reshape(batch, self.B, N)
         abu_est = self.encoder(x)
         abu_est = abu_est.reshape(1, self.c, self.im_size, self.im_size)
         cls_emb = self.vtrans(abu_est)

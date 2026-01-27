@@ -1,6 +1,7 @@
 import torch.nn as nn
 import torch.nn.functional as F
 import torch
+from torchvision.transforms import Pad
 import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
 import sys
@@ -237,12 +238,26 @@ class HyperSIGMA_Unmix(torch.nn.Module):
             endmembers = np.squeeze(endmembers)
         return endmembers
 
-def get_hypersigma_features(Y, c):
-    _, B, H, _ = Y.shape
-    features = []
+def get_hypersigma_features(Y, c, patch_size=16, overlap=0, keep_dim=False):
+    """
+    Extracts features from the input HSI
+
+    The image is forward to hypersigma by patches of size patch_size
+    We then concatenate the extracted features to form a 2D image back.
+    
+    Overlap must be even, if it is > 0, the patches are overlapping, and the resulting features is the concatenation 
+    of the features + an average of the overlapping parts
+    """
+    batch, B, H, _ = Y.shape
         
-    img_size, embed_dim, patch_size, NUM_TOKENS, scale = 64, 768, 2, 64, 1
-    hypersigma = HyperSIGMA_Unmix(patch_size=img_size, channels=B, seg_patches=patch_size, NUM_TOKENS=NUM_TOKENS, embed_dim=embed_dim, num_em=c, scale=scale)
+    embed_dim, seg_patches, NUM_TOKENS, scale = 768, 2, 64, 1
+
+    stride = patch_size - overlap
+    n_patches = (H - overlap) // stride
+    if (H - overlap) % stride != 0:
+        n_patches += 1
+
+    hypersigma = HyperSIGMA_Unmix(patch_size=patch_size, channels=B, seg_patches=seg_patches, NUM_TOKENS=NUM_TOKENS, embed_dim=embed_dim, num_em=c, scale=scale)
 
     spat_path = "/home/ids/edabier/HSU/HyperSIGMA/HyperspectralUnmixing/data/spat-vit-base-ultra-checkpoint-1599.pth"
     spec_path = "/home/ids/edabier/HSU/HyperSIGMA/HyperspectralUnmixing/data/spec-vit-base-ultra-checkpoint-1599.pth"
@@ -275,29 +290,58 @@ def get_hypersigma_features(Y, c):
     model_params.update(same_parsms)
     hypersigma.load_state_dict(model_params)
 
-    # loop over H to extract features from patches of size 64
-    current_patch = 0
-    while current_patch < H:
+    # remainder = H%patch_size
+    # if remainder > 0:
+    #     total_padding = patch_size - remainder
+    #     target_size = H + total_padding
+    #     padding = total_padding // 2
+    #     Y = F.pad(Y, (padding, padding, padding, padding), mode='reflect')
+    total_size = (n_patches - 1) * stride + patch_size
+    padding = (total_size - H) // 2
+    Y = F.pad(Y, (padding, padding, padding, padding), mode='replicate')
+    
+    # loop over H to extract features from patches of size img_size
+    features = []
+    for i in range(0, n_patches):
+        for j in range(0, n_patches):
+            i_ = i*stride
+            j_ = j*stride
+            patch = Y[: , :, i_:i_+patch_size, j_:j_+patch_size]
+            current_feature = hypersigma.forward_fusion(patch)[-1]
+            features.append(current_feature)
 
-        patch = Y[:, :, current_patch:current_patch+64, current_patch:current_patch+64]
-        
-        if patch.shape[-1] != 64:
-            dif = 64 - patch.shape[-1]
-            patch = F.pad(
-                patch,
-                (0, dif, 0, dif),
-                mode='reflect'
-            )
+    f_stride = stride//2
+    f_patch_size = patch_size//2
+    f_total_size = total_size //2
+    f_pad = padding//2
 
-        current_features = hypersigma.forward_fusion(patch)[-1]
-        features.append(current_features)
-        current_patch += 64
-    merged_features = torch.sum(torch.stack(features), dim=0)
-    return merged_features
+    D = features[0].shape[1]
+    features_map = torch.zeros(batch, D, f_total_size, f_total_size, device=features[0].device)
+    weights = torch.zeros_like(features_map)
 
-def get_dofa_features(Y, wavelengths, four_features=False):
+    idx = 0
+    for i in range(n_patches):
+        for j in range(n_patches):
+            fi = i * f_stride
+            fj = j * f_stride
+            features_map[:, :, fi:fi+f_patch_size, fj:fj+f_patch_size] += features[idx]
+            weights[:, :, fi:fi+f_patch_size, fj:fj+f_patch_size] += 1.0
+            idx += 1
+
+    # avoid division by zero just in case
+    features = features_map / weights.clamp(min=1.0)
+
+    if keep_dim:
+        features = features[:, :, f_pad:f_pad + H//2, f_pad:f_pad + H//2]
+
+    # features_grid = [features[i*n_patches : (i+1)*n_patches] for i in range(n_patches)]
+    # features = torch.cat([torch.cat(features_row, dim=3) for features_row in features_grid], dim=2)
+
+    return features
+
+def get_dofa_features(Y, wavelengths, n_features=1):
     check_point = torch.load('/home/ids/edabier/HSU/DOFA/checkpoints/DOFA_ViT_base_e100.pth', map_location=dev)
-    dofa = vit_base_patch16(four_features=four_features)
+    dofa = vit_base_patch16(n_features=n_features)
     dofa.load_state_dict(check_point, strict=False)
     features = dofa.forward_features(Y, wavelengths)
     return features
@@ -564,6 +608,51 @@ class UpsampleBlock(nn.Module):
 
     def forward(self, x):
         return self.conv_transpose(x)
+
+def upsample_features(model_name, patch_size, Y, wavelengths=None):
+    """
+    Author: Antoine Domingues
+    Extracts features from the input hsi Y and a padded version to create upsampled
+    features by averaging the overlapping features
+    
+    Args:
+        model_name: Which FM to use to extract features
+        patch_size: The patch size used by the model
+        Y: The input hsi from which to extract the features (must be of shape (batch, B, H, W) or (B, H, W))
+    """
+
+    if Y.dim() < 4:
+        Y = Y.unsqueeze(0)
+
+    padding_size = patch_size//2
+    padding = Pad(padding_size)
+    input_padded_img = padding(Y)
+
+    # Extract the features of the two views
+    H = Y.shape[2]
+
+    if model_name == "DOFA":
+        assert wavelengths != None, "Wavelengths list must be set for DOFA features extraction"
+        extracted_features = get_dofa_features(Y, wavelengths).reshape(1, H//patch_size, H//patch_size, -1) # (1, 14, 14, 768)
+        extracted_features_shifted = get_dofa_features(input_padded_img, wavelengths).reshape(1, H//patch_size + 1, H//patch_size + 1, -1) # (1, ?, ?, 768)
+
+    # Might be more difficult as DOFA needs input shape to be exactly 224 and thus cannot take padded input
+
+    extracted_features = extracted_features.permute(0, 3, 1, 2)
+    extracted_features_shifted = extracted_features_shifted.permute(0, 3, 1, 2)
+
+    # Duplicate the features via nearest neighbor interpolation to match the final resolution
+    features_up = torch.nn.functional.interpolate(extracted_features, scale_factor=2, mode='nearest')
+    features_up_shifted = torch.nn.functional.interpolate(extracted_features_shifted, scale_factor=2, mode='nearest')
+
+    # Take only the center features
+    features_up_shifted = features_up_shifted[:, :, 1:-1, 1:-1]
+
+    # Gather the features to perform the average pixel-wise
+    all_features = torch.cat((features_up, features_up_shifted), dim=0).permute(0, 2, 3, 1) # (2, 128, 128, 1024)
+    features_up = all_features.mean(dim=0, keepdim=True)
+    features_flat_up = features_up.flatten(1, 2)
+    return features_flat_up
 
 class Unmixing_from_features(nn.Module):
     def __init__(self, D, p, B, c, n_features=1, use_cls=False, hypersig=False, upsample_twice=False):
