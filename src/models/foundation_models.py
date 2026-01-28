@@ -38,9 +38,64 @@ else:
 
 MODELS = ["SpectralEarth", "SpectralGPT", "DOFA", "HyperFree", "HyperSL", "HyperSIGMA"]
 
-# def create_fm(fm_name, Y, c):
-#     batch, B, H, _ = Y.shape
+def create_fm(fm_name, Y, c=None, n_features=1, patch_size=64):
+    batch, B, H, _ = Y.shape
+    device = Y.device
 
+    if fm_name == "DOFA":
+        check_point = torch.load('/home/ids/edabier/HSU/DOFA/checkpoints/DOFA_ViT_base_e100.pth', map_location=device)
+        fm = vit_base_patch16(n_features=n_features)
+        fm.load_state_dict(check_point, strict=False)
+
+    elif fm_name == "HyperFree":
+        checkpoint = torch.load("/home/ids/edabier/HSU/HyperFree/data/HyperFree-b.pth", map_location=device)
+        fm = image_encoder.ImageEncoderViT(depth=12, embed_dim=768,
+                img_size=H, mlp_ratio=4, norm_layer=partial(torch.nn.LayerNorm, eps=1e-6),
+                num_heads=12, patch_size=patch_size, qkv_bias=True,
+                use_rel_pos=True, global_attn_indexes=[5, 8, 11],
+                merge_indexs = [3, 12], window_size=14, out_chans=256)
+        fm.load_state_dict(checkpoint, strict=False)
+
+    elif fm_name == "HyperSIGMA":
+        embed_dim, seg_patches, NUM_TOKENS, scale = 768, 2, 64, 1
+        fm = HyperSIGMA_Unmix(patch_size=patch_size, channels=B, seg_patches=seg_patches, NUM_TOKENS=NUM_TOKENS, embed_dim=embed_dim, num_em=c, scale=scale)
+
+        spat_path = "/home/ids/edabier/HSU/HyperSIGMA/HyperspectralUnmixing/data/spat-vit-base-ultra-checkpoint-1599.pth"
+        spec_path = "/home/ids/edabier/HSU/HyperSIGMA/HyperspectralUnmixing/data/spec-vit-base-ultra-checkpoint-1599.pth"
+        Spat_pernet = torch.load(spat_path, map_location=torch.device('cpu'), weights_only=False)
+        Spat_pernet = Spat_pernet['model']
+        for k in list(Spat_pernet.keys()):
+            if 'patch_embed.proj' in k:
+                del Spat_pernet[k]
+        for k in list(Spat_pernet.keys()):
+            k_ = 'spat_encoder.' + k
+            Spat_pernet[k_] = Spat_pernet.pop(k)
+
+        Spec_pernet = torch.load(spec_path, map_location=torch.device('cpu'), weights_only=False)
+        Spec_pernet = Spec_pernet['model']
+        for k in list(Spec_pernet.keys()):
+            if 'spec' in k:
+                del Spec_pernet[k]
+            if 'spat' in k:
+                del Spec_pernet[k]
+        for k in list(Spec_pernet.keys()):
+            k_ = 'spec_encoder.' + k
+            Spec_pernet[k_] = Spec_pernet.pop(k)
+
+        model_params = fm.state_dict()
+        same_parsms = {k: v for k, v in Spat_pernet.items() if k in model_params.keys()}
+        model_params.update(same_parsms)
+        fm.load_state_dict(model_params)
+
+        same_parsms = {k: v for k, v in Spec_pernet.items() if k in model_params.keys()}
+        model_params.update(same_parsms)
+        fm.load_state_dict(model_params)
+    
+    else:
+        print("Fm name is not known, use DOFA, HyperFree or HyperSIGMA")
+        return
+    
+    return fm
 
 class HyperSIGMA_Unmix(torch.nn.Module):
     def __init__(self, patch_size, channels, seg_patches, NUM_TOKENS, embed_dim, num_em, scale):
@@ -243,112 +298,26 @@ class HyperSIGMA_Unmix(torch.nn.Module):
             endmembers = np.squeeze(endmembers)
         return endmembers
 
-def get_hypersigma_features(Y, c, patch_size=64):
+def get_hypersigma_features(fm, Y, patch_size=64):
     """
     Extracts features from the input HSI (features must be extracted patch by patch, 
     processed independently and stitched back together only at pixel level and not feature level)
     """
     batch, B, H, _ = Y.shape
-        
-    embed_dim, seg_patches, NUM_TOKENS, scale = 768, 2, 64, 1
-    n_patches = H//patch_size
-    hypersigma = HyperSIGMA_Unmix(patch_size=patch_size, channels=B, seg_patches=seg_patches, NUM_TOKENS=NUM_TOKENS, embed_dim=embed_dim, num_em=c, scale=scale)
-
-    spat_path = "/home/ids/edabier/HSU/HyperSIGMA/HyperspectralUnmixing/data/spat-vit-base-ultra-checkpoint-1599.pth"
-    spec_path = "/home/ids/edabier/HSU/HyperSIGMA/HyperspectralUnmixing/data/spec-vit-base-ultra-checkpoint-1599.pth"
-    Spat_pernet = torch.load(spat_path, map_location=torch.device('cpu'), weights_only=False)
-    Spat_pernet = Spat_pernet['model']
-    for k in list(Spat_pernet.keys()):
-        if 'patch_embed.proj' in k:
-            del Spat_pernet[k]
-    for k in list(Spat_pernet.keys()):
-        k_ = 'spat_encoder.' + k
-        Spat_pernet[k_] = Spat_pernet.pop(k)
-
-    Spec_pernet = torch.load(spec_path, map_location=torch.device('cpu'), weights_only=False)
-    Spec_pernet = Spec_pernet['model']
-    for k in list(Spec_pernet.keys()):
-        if 'spec' in k:
-            del Spec_pernet[k]
-        if 'spat' in k:
-            del Spec_pernet[k]
-    for k in list(Spec_pernet.keys()):
-        k_ = 'spec_encoder.' + k
-        Spec_pernet[k_] = Spec_pernet.pop(k)
-
-    model_params = hypersigma.state_dict()
-    same_parsms = {k: v for k, v in Spat_pernet.items() if k in model_params.keys()}
-    model_params.update(same_parsms)
-    hypersigma.load_state_dict(model_params)
-
-    same_parsms = {k: v for k, v in Spec_pernet.items() if k in model_params.keys()}
-    model_params.update(same_parsms)
-    hypersigma.load_state_dict(model_params)
 
     if H > patch_size:
         Y = Y[:, :, :patch_size, :patch_size]
         print("Cutted end of Y to forward only (patch, patch) to hypersigma")
-    x = hypersigma.forward_fusion(Y)
-    p4 = hypersigma.conv1(x[4])
-    p3 = hypersigma.conv2(x[3])
-    p2 = hypersigma.conv3(x[2])
-    p1 = hypersigma.conv4(x[1])
+    x = fm.forward_fusion(Y)
+    p4 = fm.conv1(x[4])
+    p3 = fm.conv2(x[3])
+    p2 = fm.conv3(x[2])
+    p1 = fm.conv4(x[1])
     features = torch.cat([p1,p2,p3,p4], dim=1)
 
     return features
 
-# def unmix_full_image_hypersigma(Y, model, c, patch_size=64, overlap=0):
-#     """
-#     Patch-based hyperspectral unmixing using HyperSIGMA.
-#     Uses patch_size and optional overlap to tile the input image,
-#     extracts features with rsfm.get_hypersigma_features,
-#     then runs the unmixing model on each patch,
-#     and reconstructs the full abundance & reconstruction maps.
-#     """
-
-#     device = Y.device
-#     batch, B, H, W = Y.shape
-
-#     # stride determines patch shifting
-#     stride = patch_size - overlap
-
-#     # Pad the image so that it is divisible by stride exactly
-#     pad_h = H - patch_size
-#     pad_w = W - patch_size
-
-#     Y_pad = F.pad(Y, (0, pad_w, 0, pad_h), mode="reflect")
-
-#     _, _, Hp, Wp = Y_pad.shape
-
-#     A_full = torch.zeros(batch, c, Hp, Wp, device=device, dtype=Y.dtype)
-#     Y_full = torch.zeros(batch, B, Hp, Wp, device=device, dtype=Y.dtype)
-#     weight = torch.zeros(1, 1, Hp, Wp, device=device, dtype=Y.dtype)
-
-#     for i in range(0, Hp - patch_size):
-#         for j in range(0, Wp - patch_size):
-
-#             Y_patch = Y_pad[:, :, i:i+patch_size, j:j+patch_size]
-
-#             features = get_hypersigma_features(Y_patch, c, patch_size=patch_size)
-#             # noise = torch.rand_like(features)
-#             E_hat, A_hat, Y_hat = model(features)
-
-#             # accumulate (WITH grad)
-#             A_full[:, :, i:i+patch_size, j:j+patch_size] += A_hat
-#             Y_full[:, :, i:i+patch_size, j:j+patch_size] += Y_hat
-#             weight[:, :, i:i+patch_size, j:j+patch_size] += 1.0
-
-#     # average overlaps (still differentiable)
-#     A_full = A_full / weight
-#     Y_full = Y_full / weight
-
-#     # crop back to original size
-#     A_full = A_full[:, :, :H, :W]
-#     Y_full = Y_full[:, :, :H, :W]
-
-#     return E_hat, A_full, Y_full
-
-def unmix_full_image_hypersigma(Y, model, c, patch_size=64):
+def unmix_full_image_hypersigma(Y, unmixer, fm, c, patch_size=64):
     device = Y.device
     batch, B, H, W = Y.shape
 
@@ -365,8 +334,8 @@ def unmix_full_image_hypersigma(Y, model, c, patch_size=64):
         for j in range(0, Wp, patch_size):
 
             Y_patch = Y_pad[:, :, i:i+patch_size, j:j+patch_size]
-            features = get_hypersigma_features(Y_patch, c, patch_size=patch_size)
-            _, A_hat, Y_hat = model(features)
+            features = get_hypersigma_features(fm, Y_patch, c, patch_size=patch_size)
+            _, A_hat, Y_hat = unmixer(features)
 
             A_full[:, :, i:i+patch_size, j:j+patch_size] = A_hat
             Y_full[:, :, i:i+patch_size, j:j+patch_size] = Y_hat
@@ -374,30 +343,17 @@ def unmix_full_image_hypersigma(Y, model, c, patch_size=64):
     A_full = A_full[:, :, :H, :W]
     Y_full = Y_full[:, :, :H, :W]
 
-    E_hat = model.get_endmembers()
+    E_hat = unmixer.get_endmembers()
 
     return E_hat, A_full, Y_full
 
-def get_hyperfree_features(Y, wavelengths):
-    device = Y.device
-    batch, B, H, _ = Y.shape
-    checkpoint = torch.load("/home/ids/edabier/HSU/HyperFree/data/HyperFree-b.pth", map_location=device)
-    hyperfree = image_encoder.ImageEncoderViT(depth=12, embed_dim=768,
-            img_size=H, mlp_ratio=4, norm_layer=partial(torch.nn.LayerNorm, eps=1e-6),
-            num_heads=12, patch_size=16, qkv_bias=True,
-            use_rel_pos=True, global_attn_indexes=[5, 8, 11],
-            merge_indexs = [3, 12], window_size=14, out_chans=256)
-    hyperfree.load_state_dict(checkpoint, strict=False)
-    features = hyperfree(Y, input_wavelength=wavelengths)[-1]
-    features = features.reshape(256, features.shape[2]**2)
+def get_hyperfree_features(fm, Y, wavelengths):
+    features = fm(Y, input_wavelength=wavelengths)[-1]
+    features = features.reshape(256, features.shape[2]**2).squeeze(0)
     return features
 
-def get_dofa_features(Y, wavelengths, n_features=1):
-    device = Y.device
-    check_point = torch.load('/home/ids/edabier/HSU/DOFA/checkpoints/DOFA_ViT_base_e100.pth', map_location=device)
-    dofa = vit_base_patch16(n_features=n_features)
-    dofa.load_state_dict(check_point, strict=False)
-    features = dofa.forward_features(Y, wavelengths)
+def get_dofa_features(fm, Y, wavelengths):
+    features = fm.forward_features(Y, wavelengths)
     return features
 
 class Foundation_model(nn.Module):
