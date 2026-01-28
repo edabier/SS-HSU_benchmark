@@ -359,7 +359,7 @@ def plot_results(E_hat, A_hat, A_gt=None, E_gt=None, model_name=None, normalize_
             bar = plt.colorbar(pred)
 
             mse = nn.MSELoss(reduction="sum")
-            print(f"MSE(A, A_hat) = {format(mse(A_gt, A_hat)/torch.norm(A_gt)**2, '.3f')}")
+            print(f"NMSE(A, A_hat) = {format(mse(A_gt, A_hat)/(torch.norm(A_gt)**2), '.3f')}")
         else:
             fig, axes = plt.subplots(1, A_hat.shape[0], figsize=(10, 5))
             if model_name is not None:
