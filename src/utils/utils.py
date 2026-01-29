@@ -39,27 +39,6 @@ class SADLoss(nn.Module):
         loss = torch.mean(sad)
         return loss
 
-def numpy_alter_MSE(y_true, y_pred):
-    num_em = y_true.shape[0]
-    y_true = np.reshape(y_true , [num_em, -1])
-    y_pred = np.reshape(y_pred , [num_em, -1])
-
-    R = y_pred - y_true
-    r = R*R
-    mse = np.mean(r, axis=1)
-    Average_mse = np.sum(mse) / len(mse)
-    mse = np.insert(mse, num_em, Average_mse, axis=0)
-    return mse
-
-def alter_MSE(y_true, y_pred):
-    y_true = y_true.reshape(y_true.shape[0], -1)
-    y_pred = y_pred.reshape(y_pred.shape[0], -1)
-    mse = torch.mean((y_pred - y_true) ** 2, dim=1)
-    Average_mse = torch.mean(mse)
-    mse_with_avg = torch.cat([mse, Average_mse.unsqueeze(0)])
-
-    return mse_with_avg
-   
 def order_endmembers(E_gt, E_hat, A_hat=None):
     if E_hat.dim() == 2:
         E_hat = E_hat.unsqueeze(0)
@@ -279,6 +258,32 @@ def compute_metrics(E_gt, A_gt, E_hat, A_hat, Y_gt=None, Y_hat=None):
         return metric_A, metric_E, metric_re
     else:
         return metric_A, metric_E
+    
+def plot_losses(total_loss, loss_sad, loss_ab, loss_tv, loss_mse):
+    fig = plt.figure(figsize=(10, 8))
+
+    ax1 = plt.subplot2grid((3, 2), (0, 0), colspan=2)
+    ax1.plot(total_loss)
+    ax1.set_title('Training losses')
+
+    ax2 = plt.subplot2grid((3, 2), (1, 0))
+    ax2.plot(loss_sad, color='orange')
+    ax2.set_title('SAD loss')
+
+    ax3 = plt.subplot2grid((3, 2), (1, 1))
+    ax3.plot(loss_ab, color='green')
+    ax3.set_title('Abund. reg')
+
+    ax4 = plt.subplot2grid((3, 2), (2, 0))
+    ax4.plot(loss_tv, color='red')
+    ax4.set_title('TV loss')
+
+    ax5 = plt.subplot2grid((3, 2), (2, 1))
+    ax5.plot(loss_mse, color='purple')
+    ax5.set_title('MSE loss')
+
+    plt.tight_layout()
+    plt.show()
 
 def plot_results(E_hat, A_hat, A_gt=None, E_gt=None, model_name=None, normalize_E=False, normalize_A=False, plot_only_E=False, plot_only_A=False):
     """
