@@ -41,13 +41,13 @@ else:
 
 MODELS = ["SpectralEarth", "SpectralGPT", "DOFA", "HyperFree", "HyperSL", "HyperSIGMA"]
 
-def create_fm(fm_name, Y, c=None, n_features=1, patch_size=64, use_cls=False):
+def create_fm(fm_name, Y, c=None, n_features=1, patch_size=64, use_cls=False, extend_cls=False):
     batch, B, H, _ = Y.shape
     device = Y.device
 
     if fm_name == "DOFA":
         check_point = torch.load('/home/ids/edabier/HSU/DOFA/checkpoints/DOFA_ViT_base_e100.pth', map_location=device)
-        fm = vit_base_patch16(n_features=n_features, use_cls=use_cls)
+        fm = vit_base_patch16(n_features=n_features, use_cls=use_cls, extend_cls=extend_cls)
         fm.load_state_dict(check_point, strict=False)
 
     elif fm_name == "HyperFree":
@@ -336,8 +336,8 @@ def get_hypersigma_features(fm, Y, patch_size=64):
 
     return features
 
-def unmix_full_image_hypersigma(Y, unmixer, fm, c, patch_size=64):
-    device = Y.device
+def unmix_full_image_hypersigma(Y, unmixer, fm, c, patch_size=64, use_bn=False):
+
     batch, B, H, W = Y.shape
 
     pad_h = (patch_size - H % patch_size) % patch_size
@@ -346,19 +346,56 @@ def unmix_full_image_hypersigma(Y, unmixer, fm, c, patch_size=64):
     Y_pad = F.pad(Y, (0, pad_w, 0, pad_h), mode="reflect")
     _, _, Hp, Wp = Y_pad.shape
 
-    A_full = torch.zeros(batch, c, Hp, Wp, device=device, dtype=Y.dtype)
-    Y_full = torch.zeros(batch, B, Hp, Wp, device=device, dtype=Y.dtype)
+    # extract patches (batch, B*p*p, N), N = number of patches per image
+    patches = F.unfold(
+        Y_pad,
+        kernel_size=patch_size,
+        stride=patch_size
+    )
 
-    for i in range(0, Hp ,patch_size):
-        for j in range(0, Wp, patch_size):
+    N = patches.shape[-1]
 
-            Y_patch = Y_pad[:, :, i:i+patch_size, j:j+patch_size]
-            features = get_hypersigma_features(fm, Y_patch, patch_size=patch_size)
-            _, A_hat, Y_hat = unmixer(features)
+    # reshape to (batch*N, B, p, p)
+    patches = patches.transpose(1, 2)
+    patches = patches.reshape(batch * N, B, patch_size, patch_size)
 
-            A_full[:, :, i:i+patch_size, j:j+patch_size] = A_hat
-            Y_full[:, :, i:i+patch_size, j:j+patch_size] = Y_hat
+    # extract all patches' features in parallel (batch)
+    features = get_hypersigma_features(
+        fm, patches, patch_size=patch_size
+    )
 
+    # unmix all patches at once
+    noise = torch.rand_like(features)
+    if use_bn:
+        _, A_hat, Y_hat = unmixer(features) # A_hat: (batch*N, c, p, p), Y_hat: (batch*N, B, p, p)
+    
+    else:
+        _, A_hat, Y_hat = unmixer.forward_nobn(features)
+
+    # reshape back
+    A_hat = A_hat.reshape(batch, N, c, patch_size, patch_size)
+    Y_hat = Y_hat.reshape(batch, N, B, patch_size, patch_size)
+
+    # reorder to (batch, c*p*p, N)
+    A_hat = A_hat.permute(0, 2, 3, 4, 1).reshape(batch, c * patch_size * patch_size, N)
+    Y_hat = Y_hat.permute(0, 2, 3, 4, 1).reshape(batch, B * patch_size * patch_size, N)
+
+    # fold back
+    A_full = F.fold(
+        A_hat,
+        output_size=(Hp, Wp),
+        kernel_size=patch_size,
+        stride=patch_size
+    )
+
+    Y_full = F.fold(
+        Y_hat,
+        output_size=(Hp, Wp),
+        kernel_size=patch_size,
+        stride=patch_size
+    )
+
+    # crop back
     A_full = A_full[:, :, :H, :W]
     Y_full = Y_full[:, :, :H, :W]
 
@@ -396,205 +433,6 @@ def get_hyperfree_features(fm, Y, wavelengths, GSD=torch.tensor([1.0])):
 def get_dofa_features(fm, Y, wavelengths):
     features = fm.forward_features(Y, wavelengths)
     return features
-
-class Foundation_model(nn.Module):
-    def __init__(self, model_name, patch_size=None, im_size=None, channels=None, n_em=None, wavelengths=None):
-        """
-        Instantiate the provided foundation model
-        """
-        super(Foundation_model, self).__init__()
-
-        if model_name not in MODELS:
-            raise ValueError("The provided model_name does not correspond to any of [SpectralEarth, SpectralGPT, DOFA, HyperFree, HyperSL, HyperSIGMA]")
-
-        self.model_name = model_name
-        self.patch_size = patch_size
-        self.channels = channels
-        self.n_em = n_em
-
-        if model_name == "SpectralEarth":
-            model = SpecViTBase()
-            model.vit_core.head = torch.nn.Identity()
-            state_dict = torch.load(f"{global_path}/spectral_earth/data/data/spec_ViTb_mae.pth")
-            model.load_state_dict(state_dict, strict=False)
-
-            self.model = model
-            self.im_size = 128
-            # self.unmixer = Unmixing_from_features(self.n_em, self.im_size, self.channels)
-
-        # elif model_name == "SpectralGPT":
-            # assert channels is not None, "The number of channels must be specified for SpectralGPT"
-            # state_dict = torch.load(f"{global_path}/IEEE_TPAMI_SpectralGPT/data/SpectralGPT+.pth", map_location=dev, weights_only=False)["model"]
-            # self.im_size = 128
-            # spectral_gpt = models_mae_spectral.mae_vit_base_patch8_128(num_frames=channels, pred_t_dim=channels)
-            # # state_dict = checkpoint["model"] if "model" in checkpoint else checkpoint
-            # # spectral_gpt.load_state_dict(state_dict, strict=False)
-            # encoder_keys = [k for k in state_dict.keys() if k.startswith('patch_embed') or k.startswith('blocks') or k.startswith('norm')]
-            # encoder_state_dict = {k: state_dict[k] for k in encoder_keys}
-            # spectral_gpt.load_state_dict(encoder_state_dict, strict=False)
-                        
-            # self.model = spectral_gpt
-            
-        elif model_name == "DOFA":
-            assert self.channels is not None, "channels must be set"
-            assert self.n_em is not None, "n_em must be set"
-            assert wavelengths is not None, "wavelengths must be set"
-
-            state_dict = torch.load("/home/ids/edabier/HSU/DOFA/checkpoints/DOFA_ViT_base_e100.pth", map_location=dev)
-            model = vit_base_patch16()
-            model.load_state_dict(state_dict, strict=False)
-
-            self.im_size = 224
-            self.wavelengths = wavelengths
-            self.model = model
-            # self.unmixer = Unmixing_from_features(self.n_em, self.im_size, self.channels)
-
-        elif model_name == "HyperFree":
-            assert self.patch_size is not None, "Patch_size must be set"
-            assert wavelengths is not None, "wavelengths must be set"
-            assert im_size is not None, "im_size must be set"
-
-            self.im_size = im_size
-            self.wavelengths = wavelengths
-            pred = build_HyperFree_vit_b(checkpoint="/home/ids/edabier/HSU/HyperFree/data/HyperFree-b.pth", image_size=im_size, vit_patch_size=patch_size)
-            self.model = predictor.HyperFree_Predictor(pred)
-
-        elif model_name == "HyperSL":
-            pass
-
-        elif model_name == "HyperSIGMA":
-            assert self.channels is not None, "The number of channels must be specified for HyperSIGMA"
-            assert self.n_em is not None, "The number of endmembers must be specified for HyperSIGMA"
-
-            parser = argparse.ArgumentParser()
-            parser.add_argument('--patch_size', default=64)
-            parser.add_argument('--seg_patches', default=2)
-            parser.add_argument('--embed_dim', default=768)
-            parser.add_argument('--NUM_TOKENS', default=64)
-            parser.add_argument('--channels', default=channels)
-            parser.add_argument('--num_em', default=n_em)
-            parser.add_argument('--kernel', default=1)
-            parser.add_argument('--scale', default=1, type=float)
-            args, _ = parser.parse_known_args()
-
-            model = HyperSIGMA_Unmix(args)
-
-            Spat_pernet = torch.load("/home/ids/edabier/HSU/HyperSIGMA/HyperspectralUnmixing/data/spat-vit-base-ultra-checkpoint-1599.pth", map_location=torch.device('cpu'), weights_only=False)
-            Spat_pernet = Spat_pernet['model']
-            for k in list(Spat_pernet.keys()):
-                if 'patch_embed.proj' in k:
-                    del Spat_pernet[k]
-            for k in list(Spat_pernet.keys()):
-                k_ = 'spat_encoder.' + k
-                Spat_pernet[k_] = Spat_pernet.pop(k)
-
-            Spec_pernet = torch.load("/home/ids/edabier/HSU/HyperSIGMA/HyperspectralUnmixing/data/spec-vit-base-ultra-checkpoint-1599.pth", map_location=torch.device('cpu'), weights_only=False)
-            Spec_pernet = Spec_pernet['model']
-            for k in list(Spec_pernet.keys()):
-                if 'spec' in k:
-                    del Spec_pernet[k]
-                if 'spat' in k:
-                    del Spec_pernet[k]
-            for k in list(Spec_pernet.keys()):
-                k_ = 'spec_encoder.' + k
-                Spec_pernet[k_] = Spec_pernet.pop(k)
-
-            model_params = model.state_dict()
-            same_parsms = {k: v for k, v in Spat_pernet.items() if k in model_params.keys()}
-            model_params.update(same_parsms)
-            model.load_state_dict(model_params)
-
-            same_parsms = {k: v for k, v in Spec_pernet.items() if k in model_params.keys()}
-            model_params.update(same_parsms)
-            model.load_state_dict(model_params)
-            self.model = model
-
-    def get_features(self, Y):
-        """
-        Forwards the input HSI to the model's encoder to get features
-
-        Args:
-            Y: input HSI tensor of shape (batch, B, H, W)
-            for HyperFree, H and W must be multiples of patch_size and values must be normalized (/max(Y))
-        """
-        if Y.dim() == 4:
-            batch, B, H, W = Y.shape
-        elif Y.dim() == 3:
-            B, H, W = Y.shape
-            Y = Y.unsqueeze(0)
-        else:
-            print("Input HSI must be of shape (B, H, W) or (batch, B, H, W)")
-            return
-        
-        if H > self.im_size:
-            print(f"Input HSI larger than expected size ({self.im_size}), cutting it to match")
-            Y = Y[:, :, :self.im_size, :self.im_size]
-        elif H < self.im_size:
-            # TO DO
-            print(f"Input HSI smaller than expected size ({self.im_size}), padding to match")
-
-        if self.model_name == "HyperFree":
-            assert self.wavelengths is not None, "HyperFree needs wavelengths list for spectral embedding"
-            GSD = 0.456
-            ratio = 1024 / (max(Y.shape[2], Y.shape[3]))
-            GSD = GSD / ratio
-            GSD = torch.tensor([GSD])
-
-            input_im = self.model.transform.apply_image_torch(Y)
-            self.model.set_torch_image(input_im, original_image_size=(Y.shape[1], Y.shape[2]), spectral_lengths=self.wavelengths, GSD=GSD)
-
-            return self.model.features
-        
-        elif self.model_name == "DOFA":
-            assert self.wavelengths is not None, "DOFA needs wavelengths list for the positional encoding"
-            return self.model.forward_features(Y, wave_list=self.wavelengths) 
-        
-        elif self.model_name == "SpectralEarth":
-            return self.model(Y)
-        
-        elif self.model_name == "HyperSIGMA":
-            features = self.model.forward_fusion(Y)
-            return features
-        
-        else:
-            pass
-    
-    def get_abundances(self, F, Y):
-        if self.model_name == "SpectralEarth" or self.model_name == "DOFA":
-
-            if Y.shape[-1] > self.im_size:
-                Y = Y[:, :self.im_size, :self.im_size]
-
-            A_hat = self.encoder(F, Y)
-            return A_hat
-
-    def forward(self, Y):
-        """
-        Unmix the input HSI by extracting features using the rsfm, and using them to obtain abundances and endmembers
-
-        Args:
-            Y: input HSI tensor of shape (batch, B, H, W) or (B, H, W)
-            c: the number of endmembers to unmix
-        """
-        if Y.dim() == 4:
-            batch, B, H, W = Y.shape
-            Y = Y.squeeze(0)
-        elif Y.dim() == 3:
-            B, H, W = Y.shape
-            # Y = Y.unsqueeze(0)
-        else:
-            print("Input HSI must be of shape (B, H, W) or (batch, B, H, W)")
-            return 
-
-        F = self.get_features(Y)
-        A = self.get_abundances(F, Y)
-        Y_hat = self.decoder(A)
-        E = self.decoder.get_endmembers()
-
-        return E, A, Y_hat
-
-    def get_adapter_size(self):
-        print("Adapter has", sum(p.numel() for p in self.encoder.parameters() if p.requires_grad + p.numel() for p in self.decoder.parameters() if p.requires_grad)/1e3, "k params")
 
 def features_comparison(model_name, Y_gt, Y_hat, wavelengths=None, c=None):
     """
@@ -706,7 +544,7 @@ def upsample_features(model_name, patch_size, Y, wavelengths=None):
     return features_flat_up
 
 class Unmixing_from_features(nn.Module):
-    def __init__(self, D, B, c, H=224, alpha=None, n_features=1, use_cls=False, hypersig=False, upsample_twice=False):
+    def __init__(self, D, B, c, H=224, alpha=None, n_features=1, use_cls=False, hypersig=False):
         """
         Args:
             D (int): The embed_dim
@@ -726,7 +564,6 @@ class Unmixing_from_features(nn.Module):
         self.n_features = n_features
         self.use_cls = use_cls
         self.hypersig = hypersig
-        self.upsample_twice = upsample_twice
 
         # Upsampling features
         if self.use_cls:
@@ -753,6 +590,17 @@ class Unmixing_from_features(nn.Module):
                 nn.BatchNorm2d(c),
                 nn.Dropout(0.2),
             )
+
+            # Without BN
+            self.abundance_estimator_nobn = nn.Sequential(
+                nn.Conv2d(D*4, D*2, kernel_size=(3, 3), padding=1),
+                nn.LeakyReLU(0.02),
+                nn.Dropout(0.2),
+                nn.Conv2d(D*2, D, kernel_size=(1, 1)),
+                nn.Conv2d(D, c, kernel_size=1),
+                nn.LeakyReLU(0.02),
+                nn.Dropout(0.2),
+            )
         else:
             if self.use_cls:
                 self.smooth = nn.Sequential(
@@ -768,27 +616,50 @@ class Unmixing_from_features(nn.Module):
                     nn.Dropout(0.2)
                 )
 
+                # Without BN
+                self.abundance_estimator_nobn = nn.Sequential(
+                    nn.Conv2d(D, c, kernel_size=1),
+                    nn.LeakyReLU(0.02),
+                    nn.Dropout(0.2)
+                )
+
         self.sum_to_one = Sum_to_one()
         self.decoder = Decoder(B=B, c=c)
 
     @staticmethod
-    def loss(Y_gt, Y_hat, A_hat, E_hat, W_sad=1, W_ab=0.35, W_tv=0.1, W_mse=0):
+    def loss(Y_gt, Y_hat, A_hat, E_hat, W_sad=1, W_ab=0.35, W_tv_e=0.1, W_tv_a=0, W_mse=0):
         sad = utils.SADLoss()
         mse = nn.MSELoss(reduction='sum')
         
         loss_sad = sad(Y_gt, Y_hat)
         loss_ab = torch.sqrt(A_hat).mean()
-        loss_tv = (torch.abs(E_hat[:, 1:] - E_hat[:, :(-1)]).sum())
         loss_mse = mse(Y_gt, Y_hat)/(torch.norm(Y_gt)**2)
 
-        loss = W_sad * loss_sad + W_ab * loss_ab + W_tv * loss_tv + W_mse * loss_mse 
+        # TV on endmembers (sum of difference between consecutive endmembers)
+        loss_tv_e = (torch.abs(E_hat[:, 1:] - E_hat[:, :-1]).sum())
 
-        return loss, loss_sad, loss_ab, loss_tv, loss_mse
+        # TV on abundances (sum of difference between consecutive horizontal pixels + vertical pixels)
+        loss_tv_a = torch.abs(A_hat[:, :, :, 1:] - A_hat[:, :, :, :-1]).sum() + torch.abs(A_hat[:, :, 1:, :] - A_hat[:, :, :-1, :]).sum()
+
+        loss = W_sad * loss_sad + W_ab * loss_ab + W_tv_e * loss_tv_e + W_tv_a * loss_tv_a + W_mse * loss_mse 
+
+        return loss, loss_sad, loss_ab, loss_tv_e, loss_tv_a, loss_mse
+
+    @staticmethod
+    def supervised_loss(Y_gt, Y_hat, A_gt, A_hat, E_gt, E_hat):
+        sad = utils.SADLoss()
+        mse = nn.MSELoss(reduction='sum')
+
+        loss_re = sad(Y_gt, Y_hat)
+        loss_mse = mse(A_gt, A_hat)/(torch.norm(A_gt)**2)
+        loss_sad = sad(E_gt, E_hat)
+        loss = loss_re + loss_mse + loss_sad
+
+        return loss, loss_re, loss_sad, loss_mse
     
     def get_abundances(self, features):
 
         if self.use_cls:
-
             features_2d = features.reshape(self.c, int(self.D/self.c))
             features_up = self.upsample(features_2d)
             A_hat = features_up.reshape(1, self.c, self.H, self.H)
@@ -799,17 +670,161 @@ class Unmixing_from_features(nn.Module):
                 features = features.reshape(1, 4*self.D, self.alpha, self.alpha)
             features_up = F.interpolate(features, size=(self.H, self.H), mode='bilinear', align_corners=True)
             # noise = torch.rand_like(features_up)
-            # A_hat = self.abundance_estimator(features_up)
             A_hat = self.abundance_estimator(features_up)
 
         else:
-
             features = features.reshape(self.D, self.n_features*self.alpha*self.alpha)
             features_up = self.upsample(features)
             features_up = features_up.view(
                 1, self.D, self.H, self.H
             )
+            noise = torch.rand_like(features_up)
             A_hat = self.abundance_estimator(features_up)
+
+        A_hat = self.sum_to_one(A_hat)
+
+        return A_hat
+    
+    def get_abundances_nobn(self, features):
+
+        if self.use_cls:
+            features_2d = features.reshape(self.c, int(self.D/self.c))
+            features_up = self.upsample(features_2d)
+            A_hat = features_up.reshape(1, self.c, self.H, self.H)
+            A_hat = self.smooth(A_hat)           
+
+        elif self.hypersig:
+            if features.dim() == 2:
+                features = features.reshape(1, 4*self.D, self.alpha, self.alpha)
+            features_up = F.interpolate(features, size=(self.H, self.H), mode='bilinear', align_corners=True)
+            # noise = torch.rand_like(features_up)
+
+            A_hat = self.abundance_estimator_nobn(features_up)
+
+        else:
+            features = features.reshape(self.D, self.n_features*self.alpha*self.alpha)
+            features_up = self.upsample(features)
+            features_up = features_up.view(
+                1, self.D, self.H, self.H
+            )
+            noise = torch.rand_like(features_up)
+
+            A_hat = self.abundance_estimator_nobn(features_up)
+
+        A_hat = self.sum_to_one(A_hat)
+
+        return A_hat  
+    
+    def get_endmembers(self):
+        return self.decoder.get_endmembers()
+    
+    def forward_nobn(self, features):
+        A_hat = self.get_abundances_nobn(features)
+        Y_hat = self.decoder(A_hat)
+        E_hat = self.decoder.get_endmembers()
+
+        return E_hat, A_hat, Y_hat
+    
+    def forward(self, features):
+        A_hat = self.get_abundances(features)
+        Y_hat = self.decoder(A_hat)
+        E_hat = self.decoder.get_endmembers()
+
+        return E_hat, A_hat, Y_hat
+
+
+class Unmixing_from_features2(nn.Module):
+    def __init__(self, D, B, c, H=224, alpha=None, n_features=1, no_bn=False):
+        """
+        Args:
+            D (int): The embed_dim
+            B (int): The number of spectral bands in the hsi
+            c (int): The number of endmembers to extract
+            H (int): The size of the input hsi
+            alpha (int): The size of the features
+            n_features (int): The size of the list of features in the case of several extracted features
+
+        """
+        super(Unmixing_from_features2, self).__init__()
+        self.D = D
+        self.alpha = alpha
+        self.B = B
+        self.c = c
+        self.H = H
+        self.n_features = n_features
+
+        # Upsampling features
+        self.upsample = nn.Sequential(
+            nn.Linear(self.n_features*(self.alpha**2), self.H**2)
+        )
+
+        # Upsampled features to abundances
+        self.abundance_estimator = nn.Sequential(
+            nn.Conv2d(D, c, kernel_size=1),
+            nn.LeakyReLU(0.02),
+            nn.BatchNorm2d(c),
+            nn.Dropout(0.2)
+        )
+
+        if no_bn:
+            self.abundance_estimator_nobn = nn.Sequential(
+                nn.Conv2d(D, c, kernel_size=1),
+                nn.LeakyReLU(0.02),
+                nn.Dropout(0.2)
+            )
+
+        self.norm = nn.LayerNorm([self.D, self.H, self.H])
+
+        self.sum_to_one = Sum_to_one()
+        self.decoder = Decoder(B=B, c=c)
+
+    @staticmethod
+    def weights_init(m):
+        if type(m) == nn.Conv2d:
+            nn.init.kaiming_normal_(m.weight.data)
+
+    @staticmethod
+    def loss(Y_gt, Y_hat, A_hat, E_hat, W_sad=1, W_ab=0.35, W_tv_e=0.1, W_tv_a=0, W_mse=0):
+        sad = utils.SADLoss()
+        mse = nn.MSELoss(reduction='sum')
+        
+        loss_sad = sad(Y_gt, Y_hat)
+        loss_ab = torch.sqrt(A_hat).mean()
+        loss_mse = mse(Y_gt, Y_hat)/(torch.norm(Y_gt)**2)
+
+        # TV on endmembers (sum of difference between consecutive endmembers)
+        loss_tv_e = (torch.abs(E_hat[:, 1:] - E_hat[:, :-1]).sum())
+
+        # TV on abundances (sum of difference between consecutive horizontal pixels + vertical pixels)
+        loss_tv_a = torch.abs(A_hat[:, :, :, 1:] - A_hat[:, :, :, :-1]).sum() + torch.abs(A_hat[:, :, 1:, :] - A_hat[:, :, :-1, :]).sum()
+
+        loss = W_sad * loss_sad + W_ab * loss_ab + W_tv_e * loss_tv_e + W_tv_a * loss_tv_a + W_mse * loss_mse 
+
+        return loss, loss_sad, loss_ab, loss_tv_e, loss_tv_a, loss_mse
+
+    def get_abundances(self, features):
+
+        features = features.reshape(self.D, self.n_features*self.alpha*self.alpha)
+        features_up = self.upsample(features)
+        features_up = features_up.view(
+            1, self.D, self.H, self.H
+        )
+        features_up = self.norm(features_up)
+        A_hat = self.abundance_estimator(features_up)
+
+        A_hat = self.sum_to_one(A_hat)
+
+        return A_hat
+
+    def get_abundances_nobn(self, features):
+
+        features = features.reshape(self.D, self.n_features*self.alpha*self.alpha)
+        features_up = self.upsample(features)
+        features_up = features_up.view(
+            1, self.D, self.H, self.H
+        )
+        features_up = self.norm(features_up)
+        A_hat = self.abundance_estimator_nobn(features_up)
 
         A_hat = self.sum_to_one(A_hat)
 
@@ -817,6 +832,13 @@ class Unmixing_from_features(nn.Module):
     
     def get_endmembers(self):
         return self.decoder.get_endmembers()
+    
+    def forward_nobn(self, features):
+        A_hat = self.get_abundances_nobn(features)
+        Y_hat = self.decoder(A_hat)
+        E_hat = self.decoder.get_endmembers()
+
+        return E_hat, A_hat, Y_hat
     
     def forward(self, features):
         A_hat = self.get_abundances(features)

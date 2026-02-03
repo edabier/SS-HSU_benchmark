@@ -45,7 +45,7 @@ def order_endmembers(E_gt, E_hat, A_hat=None):
     if E_gt.dim() == 2:
         E_gt = E_gt.unsqueeze(0)
         
-    if A_hat is not None:
+    if A_hat != None:
         if A_hat.dim() < 4:
             A_hat = A_hat.unsqueeze(0)
         A_hat_corr = torch.zeros_like(A_hat)
@@ -70,24 +70,24 @@ def order_endmembers(E_gt, E_hat, A_hat=None):
         EPerm_norm = torch.zeros(E0.shape)
         perm_indices = torch.zeros(E0.shape[1])
     
-        if A_hat is not None:
+        if A_hat != None:
             APerm = torch.zeros(A_hat[batch].shape)
         
         for c in range(E0.shape[1]):
             EPerm[:,c] = E_hat[batch,:,Jperm[c][1]]
             EPerm_norm[:,c] = E_gt[batch, :,Jperm[c][1]]
             perm_indices[c] = Jperm[c][1]
-            if A_hat is not None:
+            if A_hat != None:
                 APerm[c] = A_hat[batch, Jperm[c][1]]
         
         E_hat_corr_norm[batch,:,:] = EPerm_norm
         E_hat_corr[batch,:,:] = EPerm
         indices[batch,:] = perm_indices
-        if A_hat is not None:
+        if A_hat != None:
             A_hat_corr[batch] = APerm
     indices = indices.type(torch.int64)
 
-    if A_hat is not None:
+    if A_hat != None:
         return E_hat_corr[0], E_hat_corr_norm[0], A_hat_corr[0], indices
     else:
         return E_hat_corr[0], E_hat_corr_norm[0], indices
@@ -98,7 +98,7 @@ def order_abundances(A_gt, A_hat, E_hat=None):
     if A_gt.dim() == 3:
         A_gt = A_gt.unsqueeze(0)
         
-    if E_hat is not None:
+    if E_hat != None:
         if E_hat.dim() < 3:
             E_hat = E_hat.unsqueeze(0)
         E_hat_corr = torch.zeros_like(E_hat)
@@ -127,7 +127,7 @@ def order_abundances(A_gt, A_hat, E_hat=None):
         APerm_gt = torch.zeros(A_true.shape, dtype=torch.float)
         perm_indices = torch.zeros(A_true.shape[0])
     
-        if E_hat is not None:
+        if E_hat != None:
             EPerm = torch.zeros(E_hat[batch].shape)
         
         for c in range(A_true.shape[0]):
@@ -135,13 +135,13 @@ def order_abundances(A_gt, A_hat, E_hat=None):
             APerm_gt[c, :] = A_gt[batch, Jperm[c][1]]
             perm_indices[c] = Jperm[c][1]
 
-            if E_hat is not None:
+            if E_hat != None:
                 EPerm[:, c] = E_hat[batch, :, Jperm[c][1]]
 
         A_hat_corr_gt[batch] = APerm_gt
         A_hat_corr[batch] = APerm
         indices[batch] = perm_indices
-        if E_hat is not None:
+        if E_hat != None:
             E_hat_corr[batch] = EPerm
     indices = indices.type(torch.int64)
 
@@ -150,7 +150,7 @@ def order_abundances(A_gt, A_hat, E_hat=None):
     A_ordered = oneD_to_2d(A_ordered)
     A_ordered_gt = oneD_to_2d(A_ordered_gt)
 
-    if A_hat is not None:
+    if A_hat != None:
         E_ordered = E_hat_corr[0]
         return A_ordered, A_ordered_gt, E_ordered, indices
     else:
@@ -252,7 +252,7 @@ def compute_metrics(E_gt, A_gt, E_hat, A_hat, Y_gt=None, Y_hat=None):
     metric_A = mse(A_gt, A_hat)/(torch.norm(A_gt)**2)
     metric_E = sad(E_gt, E_hat)
 
-    if Y_gt is not None:
+    if Y_gt != None:
         metric_re = mse(Y_gt, Y_hat)/(torch.norm(Y_gt)**2)
     
         return metric_A, metric_E, metric_re
@@ -292,13 +292,13 @@ def plot_results(E_hat, A_hat, A_gt=None, E_gt=None, model_name=None, normalize_
     if E_hat.dim() == 3:
         print("Not taking batched E_hat")
         E_hat = E_hat[0]
-    if E_gt is not None and E_gt.dim() == 3:
+    if E_gt != None and E_gt.dim() == 3:
         print("Not taking batched E_gt")
         E_gt = E_gt[0]
     if A_hat.dim() == 4:
         print("Not taking batched A_hat")
         A_hat = A_hat[0]
-    if A_gt.dim() == 4:
+    if A_gt != None and A_gt.dim() == 4:
         print("Not taking batched A_gt")
         A_gt = A_gt[0]
 
@@ -306,8 +306,11 @@ def plot_results(E_hat, A_hat, A_gt=None, E_gt=None, model_name=None, normalize_
     n_graph = c // 2
     if c % 2 != 0: n_graph = n_graph + 1
 
+    sad = SADLoss()
+    mse = nn.MSELoss(reduction="sum")
+
     if not plot_only_A:
-        if E_gt is not None:
+        if E_gt != None:
 
             E_hat, _, A_hat, _ = order_endmembers(E_gt, E_hat, A_hat)
             
@@ -315,25 +318,26 @@ def plot_results(E_hat, A_hat, A_gt=None, E_gt=None, model_name=None, normalize_
                 E_hat = normalize(E_hat, dim=1)
                 E_gt = normalize(E_gt, dim=1)
 
-            fig, axes = plt.subplots(2, n_graph)
+            fig, axes = plt.subplots(2, n_graph, figsize=(7,5))
             axes = axes.flatten()
-            if model_name is not None:
-                plt.suptitle(f'{model_name} Endmember estimation')
-            else:
-                plt.suptitle('Endmember estimation')
             for i in range(c):
                 ax = axes[i]
+                metric = sad(E_gt[:, i], E_hat[:, i])
                 ax.plot(E_gt[:, i].detach().cpu(), 'r', linewidth=1.0, label='GT')
                 ax.plot(E_hat[:, i].detach().cpu(), 'k-', linewidth=1.0, label='predict')
+                ax.set_title(f"SAD = {format(metric, '.2f')}")
                 if i == 0:
-                    plt.legend() 
+                    ax.legend() 
             for j in range(i + 1, len(axes)):
                 axes[j].axis('off')
+            plt.subplots_adjust(hspace=0.5, wspace=0.4)
+            if model_name != None:
+                plt.suptitle(f"{model_name} Endmember estimation, SAD = {format(sad(E_gt, E_hat), '.3f')}")
+            else:
+                plt.suptitle(f"Endmember estimation, SAD = {format(sad(E_gt, E_hat), '.3f')}")
             
-            sad = SADLoss()
-            print(f"SAD(E, E_hat) = {format(sad(E_gt, E_hat), '.3f')}")
         else:
-            if model_name is not None:
+            if model_name != None:
                 plt.suptitle(f'{model_name} Endmember estimation')
             else:
                 plt.suptitle('Endmember estimation')
@@ -342,32 +346,34 @@ def plot_results(E_hat, A_hat, A_gt=None, E_gt=None, model_name=None, normalize_
                 plt.plot(E_hat[:, i].detach().cpu(), 'k-', linewidth=1.0, label='predict')
 
     if not plot_only_E:
-        if A_gt is not None:
+        if A_gt != None:
 
             if normalize_A:
                 A_hat = normalize(A_hat)
 
             fig, axes = plt.subplots(2, A_hat.shape[0], figsize=(10, 5))
-            if model_name is not None:
-                plt.suptitle(f'{model_name} abundance estimation')
-            else:
-                plt.suptitle('Abundance estimation')
-            axes[0, 0].set_title(f"Prediction", fontsize=12)
-            axes[1, 0].set_title(f"GT", fontsize=12)
             for i in range(A_hat.shape[0]):
                 pred = axes[0, i].imshow(A_hat[i].detach().cpu())
+                axes[0, i].set_title(f"NMSE = {format(mse(A_gt[i], A_hat[i])/(torch.norm(A_gt[i])**2), '.2f')}")
                 axes[0, i].axis('off')
 
                 gt = axes[1, i].imshow(A_gt[i].detach().cpu())
                 axes[1, i].axis('off')
-            bar = plt.colorbar(gt)
-            bar = plt.colorbar(pred)
 
-            mse = nn.MSELoss(reduction="sum")
-            print(f"NMSE(A, A_hat) = {format(mse(A_gt, A_hat)/(torch.norm(A_gt)**2), '.3f')}")
+            fig.colorbar(pred, ax=axes[0, -1], fraction=0.046, pad=0.04)
+            fig.colorbar(gt, ax=axes[1, -1], fraction=0.046, pad=0.04)
+            fig.text(0.05, 0.7, 'prediction', va='center', ha='center', fontsize=12, rotation='vertical')
+            fig.text(0.05, 0.4, 'gt', va='center', ha='center', fontsize=12, rotation='vertical')
+            plt.subplots_adjust(left=0.1, right=0.9, top=0.5, bottom=0.1, wspace=0.1, hspace=0.5)
+            fig.tight_layout(rect=[0.05, 0.25, 0.95, 0.9])
+
+            if model_name != None:
+                plt.suptitle(f"{model_name} abundance estimation, NMSE = {format(mse(A_gt, A_hat)/(torch.norm(A_gt)**2), '.3f')}")
+            else:
+                plt.suptitle(f"Abundance estimation, NMSE = {format(mse(A_gt, A_hat)/(torch.norm(A_gt)**2), '.3f')}")
         else:
             fig, axes = plt.subplots(1, A_hat.shape[0], figsize=(10, 5))
-            if model_name is not None:
+            if model_name != None:
                 plt.suptitle(f'{model_name} abundance estimation')
             else:
                 plt.suptitle('Abundance estimation')
@@ -398,7 +404,7 @@ def compare_hsis(Y_gt, Y_hat, title=None):
 
         gt = axes[1, i].imshow(Y_gt[i_th].detach().cpu())
         axes[1, i].axis('off')
-    if title is not None:
+    if title != None:
         plt.suptitle(title)
     bar = plt.colorbar(gt)
     bar = plt.colorbar(pred)
@@ -452,13 +458,13 @@ def crop_patch_image(Y, patch_size, A=None):
         
     k = int((N**0.5)//patch_size)
     
-    if batch is not None:
+    if batch != None:
         Y = oneD_to_2d(Y)
         s = k*patch_size
         Y = Y[:, :, :s, :s]
         Y = Y.reshape(batch, B, s**2)
         
-        if A is not None:
+        if A != None:
             A = oneD_to_2d(A)
             A = A[:, :, :s, :s]
             A = A.reshape(batch, A.shape[1], s**2)
@@ -471,7 +477,7 @@ def crop_patch_image(Y, patch_size, A=None):
         Y = Y[:, :s, :s]
         Y = Y.reshape(B, s**2)
         
-        if A is not None:
+        if A != None:
             A = oneD_to_2d(A)
             A = A[:, :s, :s]
             A = A.reshape(A.shape[0], s**2)
@@ -536,49 +542,49 @@ class HSI_dataset(Dataset):
         
         if dataset == 'samson':
             self.B, self.c = data['E'].shape[0], data['E'].shape[1]
-            if patch_size is not None:
+            if patch_size != None:
                 self.col = patch_size
             else:
                 self.col = data["Y"].shape[1]
         elif dataset == 'jasper':
             self.B, self.c = data['E'].shape[0], data['E'].shape[1]
             
-            if patch_size is not None:
+            if patch_size != None:
                 self.col = patch_size
             else:
                 self.col = data["Y"].shape[1]
         elif dataset == 'urban':
             self.B, self.c = data['E'].shape[0], data['E'].shape[1]
             
-            if patch_size is not None:
+            if patch_size != None:
                 self.col = patch_size
             else:
                 self.col = data["Y"].shape[1]
         elif dataset == 'apex':
             self.B, self.c = data['E'].shape[0], data['E'].shape[1]
             
-            if patch_size is not None:
+            if patch_size != None:
                 self.col = patch_size
             else:
                 self.col = data["Y"].shape[1]
         elif dataset == 'simulee_1':
             self.B, self.c = data['E'].shape[0], data['E'].shape[1]
             
-            if patch_size is not None:
+            if patch_size != None:
                 self.col = patch_size
             else:
                 self.col = data["Y"].shape[1]
         elif dataset == 'simulee_2':
             self.B, self.c = data['E'].shape[0], data['E'].shape[1]
             
-            if patch_size is not None:
+            if patch_size != None:
                 self.col = patch_size
             else:
                 self.col = data["Y"].shape[1]
         elif dataset == 'simulee_3':
             self.B, self.c = data['E'].shape[0], data['E'].shape[1]
             
-            if patch_size is not None:
+            if patch_size != None:
                 self.col = patch_size
             else:
                 self.col = data["Y"].shape[1]
@@ -592,7 +598,7 @@ class HSI_dataset(Dataset):
         self.c = self.E.shape[1]
         
         self.patch_size = patch_size
-        if patch_size is not None:
+        if patch_size != None:
             # number of patches in one row/column (after padding)
             self.num_rows = math.ceil(self.n / patch_size)
             self.num_cols = self.num_rows  # square image assumption
@@ -661,7 +667,7 @@ def create_dataloader(dataset, path="/home/ids/edabier/HSU/SS-HSU_benchmark/data
     else:
         dataset = HSI_dataset(dataset, path, patch_size, dtype=dtype)
         
-    if train_split is not None:
+    if train_split != None:
         generator = torch.Generator(dev)
         train_set, test_set = random_split(dataset, lengths=[train_split, 1-train_split], generator=generator)
 

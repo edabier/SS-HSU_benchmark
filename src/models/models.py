@@ -135,26 +135,6 @@ class CNNAEU(nn.Module, HSUModel):
         
         return e_hat, a_hat, x_hat
 
-class SAD(nn.Module):
-    def __init__(self, num_bands):
-        super(SAD, self).__init__()
-        self.num_bands = num_bands
-
-    def forward(self, inp, target):
-        try:
-            input_norm = torch.sqrt(torch.bmm(inp.view(-1, 1, self.num_bands),
-                                              inp.view(-1, self.num_bands, 1)))
-            target_norm = torch.sqrt(torch.bmm(target.view(-1, 1, self.num_bands),
-                                               target.view(-1, self.num_bands, 1)))
-
-            summation = torch.bmm(inp.view(-1, 1, self.num_bands), target.view(-1, self.num_bands, 1))
-            angle = torch.acos(summation / (input_norm * target_norm))
-
-        except ValueError:
-            return 0.0
-
-        return angle
-
 class DeepTrans(nn.Module, HSUModel):
     """
     Args:
@@ -164,7 +144,7 @@ class DeepTrans(nn.Module, HSUModel):
         patch_size (int, optional): how much to split the input image (default: 5)
         embed_dim (int, optional): the dimension of the features extracted 
     """
-    def __init__(self, B, c, im_size, patch_size=5, embed_dim=24):
+    def __init__(self, B, c, im_size, patch_size=5, embed_dim=200):
         super(DeepTrans, self).__init__()
         self.B, self.c, self.im_size, self.embed_dim, self.patch_size = B, c, im_size, embed_dim, patch_size
         self.encoder = nn.Sequential(
@@ -202,19 +182,13 @@ class DeepTrans(nn.Module, HSUModel):
             nn.init.kaiming_normal_(m.weight.data)
 
     @staticmethod
-    def loss(E_gt=None, E_hat=None, A_gt=None, A_hat=None, Y_gt=None, Y_hat=None, alpha=4e3, beta=5e-2):
-        # mse = nn.MSELoss(reduction="sum")
-        # sad = utils.SADLoss()
+    def loss(E_gt=None, E_hat=None, A_gt=None, A_hat=None, Y_gt=None, Y_hat=None, alpha=5e3, beta=5e-2):
+        mse = nn.MSELoss(reduction="mean")
+        sad = utils.SADLoss()
 
-        # loss_re = alpha * mse(Y_gt, Y_hat)
-        # loss_sad = beta * sad(Y_gt, Y_hat)
-        # return loss_re + loss_sad
         B = Y_gt.shape[1]
-        loss_func = nn.MSELoss(reduction='mean')
-        loss_func2 = SAD(B)
-        loss_re = alpha * loss_func(Y_hat, Y_gt)
-        loss_sad = loss_func2(Y_hat.view(1, B, -1).transpose(1, 2),
-                                Y_gt.view(1, B, -1).transpose(1, 2))
+        loss_re = alpha * mse(Y_hat, Y_gt)
+        loss_sad = sad(Y_hat, Y_gt)
         loss_sad = beta * torch.sum(loss_sad).float()
 
         total_loss = loss_re + loss_sad
@@ -230,8 +204,9 @@ class DeepTrans(nn.Module, HSUModel):
         if x.dim() < 3:
             x = x.unsqueeze(0) # Add a batch dimension for inference
 
+        x = utils.oneD_to_2d(x)
+
         abu_est = self.encoder(x)
-        abu_est = abu_est.reshape(1, self.c, self.im_size, self.im_size)
         cls_emb = self.vtrans(abu_est)
         cls_emb = cls_emb.view(1, self.c, -1)
         abu_est = self.upscale(cls_emb).view(1, self.c, self.im_size, self.im_size)
