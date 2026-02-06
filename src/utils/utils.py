@@ -13,6 +13,31 @@ from io import BytesIO
 from PIL import Image
 from code_christophe.munkres import Munkres
 
+class TVLoss(nn.Module):
+    def __init__(self, reduction=None):
+        super(TVLoss,self).__init__()
+        self.reduction = reduction
+
+    def forward(self,x):
+        """
+        Expects input x to be of shape (batch, B, H, W)
+        """
+        batch = x.shape[0]
+
+        diff1 = x[..., 1:, :] - x[..., :-1, :]
+        diff2 = x[..., :, 1:] - x[..., :, :-1]
+
+        res1 = diff1.abs().sum([1, 2, 3])
+        res2 = diff2.abs().sum([1, 2, 3])
+        score = res1 + res2
+
+        if self.reduction == "mean":
+            return score.sum() / batch
+        elif self.reduction == "sum":
+            return score.sum()
+        elif self.reduction is None or batch == "none":
+            return score[0]
+
 class SADLoss(nn.Module):
     """
     SAD loss function for EndMember matrices. To use it on Abundances, transpose the two inputs. (Doesn't correct permutations)
@@ -285,21 +310,28 @@ def plot_losses(total_loss, loss_sad, loss_ab, loss_tv, loss_mse):
     plt.tight_layout()
     plt.show()
 
-def plot_results(E_hat, A_hat, A_gt=None, E_gt=None, model_name=None, normalize_E=False, normalize_A=False, plot_only_E=False, plot_only_A=False):
+def plot_results(E_hat, A_hat, A_gt=None, E_gt=None, model_name=None, normalize_E=False, normalize_A=False, plot_only_E=False, plot_only_A=False, return_results=False, verbose=False):
     """
     Displays the predicted endmembers and abundances
     """
     if E_hat.dim() == 3:
-        print("Not taking batched E_hat")
+        if verbose:
+            print("Not taking batched E_hat")
         E_hat = E_hat[0]
+        
     if E_gt != None and E_gt.dim() == 3:
-        print("Not taking batched E_gt")
+        if verbose:
+            print("Not taking batched E_gt")
         E_gt = E_gt[0]
+
     if A_hat.dim() == 4:
-        print("Not taking batched A_hat")
+        if verbose:
+            print("Not taking batched A_hat")
         A_hat = A_hat[0]
+
     if A_gt != None and A_gt.dim() == 4:
-        print("Not taking batched A_gt")
+        if verbose:
+            print("Not taking batched A_gt")
         A_gt = A_gt[0]
 
     c = E_hat.shape[1]
@@ -331,10 +363,11 @@ def plot_results(E_hat, A_hat, A_gt=None, E_gt=None, model_name=None, normalize_
             for j in range(i + 1, len(axes)):
                 axes[j].axis('off')
             plt.subplots_adjust(hspace=0.5, wspace=0.4)
+            total_sad = sad(E_gt, E_hat)
             if model_name != None:
-                plt.suptitle(f"{model_name} Endmember estimation, SAD = {format(sad(E_gt, E_hat), '.3f')}")
+                plt.suptitle(f"{model_name} Endmember estimation, SAD = {format(total_sad, '.3f')}")
             else:
-                plt.suptitle(f"Endmember estimation, SAD = {format(sad(E_gt, E_hat), '.3f')}")
+                plt.suptitle(f"Endmember estimation, SAD = {format(total_sad, '.3f')}")
             
         else:
             if model_name != None:
@@ -367,10 +400,11 @@ def plot_results(E_hat, A_hat, A_gt=None, E_gt=None, model_name=None, normalize_
             plt.subplots_adjust(left=0.1, right=0.9, top=0.5, bottom=0.1, wspace=0.1, hspace=0.5)
             fig.tight_layout(rect=[0.05, 0.25, 0.95, 0.9])
 
+            total_mse = mse(A_gt, A_hat)/(torch.norm(A_gt)**2)
             if model_name != None:
-                plt.suptitle(f"{model_name} abundance estimation, NMSE = {format(mse(A_gt, A_hat)/(torch.norm(A_gt)**2), '.3f')}")
+                plt.suptitle(f"{model_name} abundance estimation, NMSE = {format(total_mse, '.3f')}")
             else:
-                plt.suptitle(f"Abundance estimation, NMSE = {format(mse(A_gt, A_hat)/(torch.norm(A_gt)**2), '.3f')}")
+                plt.suptitle(f"Abundance estimation, NMSE = {format(total_mse, '.3f')}")
         else:
             fig, axes = plt.subplots(1, A_hat.shape[0], figsize=(10, 5))
             if model_name != None:
@@ -382,6 +416,9 @@ def plot_results(E_hat, A_hat, A_gt=None, E_gt=None, model_name=None, normalize_
                 pred = axes[i].imshow(A_hat[i].detach().cpu())
                 axes[i].axis('off')
             bar = plt.colorbar(pred)
+    
+    if return_results:
+        return total_sad, total_mse
 
 def compare_hsis(Y_gt, Y_hat, title=None):
     """

@@ -98,7 +98,6 @@ def create_fm(fm_name, Y, c=None, n_features=1, patch_size=64, use_cls=False, ex
         fm = spec_vit.SpecViTBase()
         checkpoint = torch.load("/home/ids/edabier/HSU/spectral_earth/data/data/spec_ViTb_mae.pth", map_location=dev)
         fm.load_state_dict(checkpoint, strict=False)
-        fm.head = nn.Identity()
 
     elif fm_name == "SpecRnDino":
         fm = spec_resnet.SpecResNet50(num_classes=0)
@@ -336,7 +335,7 @@ def get_hypersigma_features(fm, Y, patch_size=64):
 
     return features
 
-def unmix_full_image_hypersigma(Y, unmixer, fm, c, patch_size=64, use_bn=False):
+def unmix_full_image_hypersigma(Y, unmixer, fm, c, patch_size=64, use_bn=True):
 
     batch, B, H, W = Y.shape
 
@@ -402,6 +401,17 @@ def unmix_full_image_hypersigma(Y, unmixer, fm, c, patch_size=64, use_bn=False):
     E_hat = unmixer.get_endmembers()
 
     return E_hat, A_full, Y_full
+
+def get_specvit_features(fm, Y, use_cls=False):
+    features = fm(Y)
+
+    if use_cls:
+        features = features[:, 0, :]
+    else:
+        features = features[:, 1:, :]
+        features = features[0].T
+
+    return features
 
 def get_hyperfree_features(fm, Y, wavelengths, GSD=torch.tensor([1.0])):
     """
@@ -590,17 +600,6 @@ class Unmixing_from_features(nn.Module):
                 nn.BatchNorm2d(c),
                 nn.Dropout(0.2),
             )
-
-            # Without BN
-            self.abundance_estimator_nobn = nn.Sequential(
-                nn.Conv2d(D*4, D*2, kernel_size=(3, 3), padding=1),
-                nn.LeakyReLU(0.02),
-                nn.Dropout(0.2),
-                nn.Conv2d(D*2, D, kernel_size=(1, 1)),
-                nn.Conv2d(D, c, kernel_size=1),
-                nn.LeakyReLU(0.02),
-                nn.Dropout(0.2),
-            )
         else:
             if self.use_cls:
                 self.smooth = nn.Sequential(
@@ -616,19 +615,18 @@ class Unmixing_from_features(nn.Module):
                     nn.Dropout(0.2)
                 )
 
-                # Without BN
-                self.abundance_estimator_nobn = nn.Sequential(
-                    nn.Conv2d(D, c, kernel_size=1),
-                    nn.LeakyReLU(0.02),
-                    nn.Dropout(0.2)
-                )
-
         self.sum_to_one = Sum_to_one()
         self.decoder = Decoder(B=B, c=c)
 
     @staticmethod
+    def weights_init(m):
+        if type(m) == nn.Conv2d:
+            nn.init.kaiming_normal_(m.weight.data)
+
+    @staticmethod
     def loss(Y_gt, Y_hat, A_hat, E_hat, W_sad=1, W_ab=0.35, W_tv_e=0.1, W_tv_a=0, W_mse=0):
         sad = utils.SADLoss()
+        tv = utils.TVLoss(reduction="mean")
         mse = nn.MSELoss(reduction='sum')
         
         loss_sad = sad(Y_gt, Y_hat)
@@ -639,7 +637,8 @@ class Unmixing_from_features(nn.Module):
         loss_tv_e = (torch.abs(E_hat[:, 1:] - E_hat[:, :-1]).sum())
 
         # TV on abundances (sum of difference between consecutive horizontal pixels + vertical pixels)
-        loss_tv_a = torch.abs(A_hat[:, :, :, 1:] - A_hat[:, :, :, :-1]).sum() + torch.abs(A_hat[:, :, 1:, :] - A_hat[:, :, :-1, :]).sum()
+        # loss_tv_a = torch.abs(A_hat[:, :, :, 1:] - A_hat[:, :, :, :-1]).sum() + torch.abs(A_hat[:, :, 1:, :] - A_hat[:, :, :-1, :]).sum()
+        loss_tv_a = tv(A_hat)
 
         loss = W_sad * loss_sad + W_ab * loss_ab + W_tv_e * loss_tv_e + W_tv_a * loss_tv_a + W_mse * loss_mse 
 
@@ -670,6 +669,7 @@ class Unmixing_from_features(nn.Module):
                 features = features.reshape(1, 4*self.D, self.alpha, self.alpha)
             features_up = F.interpolate(features, size=(self.H, self.H), mode='bilinear', align_corners=True)
             # noise = torch.rand_like(features_up)
+            features_up = (features_up - features_up.mean())/ (1e-8 + features_up.std())
             A_hat = self.abundance_estimator(features_up)
 
         else:
@@ -678,52 +678,14 @@ class Unmixing_from_features(nn.Module):
             features_up = features_up.view(
                 1, self.D, self.H, self.H
             )
-            noise = torch.rand_like(features_up)
+            features_up = (features_up - features_up.mean())/ (1e-8 + features_up.std())
             A_hat = self.abundance_estimator(features_up)
-
         A_hat = self.sum_to_one(A_hat)
 
         return A_hat
     
-    def get_abundances_nobn(self, features):
-
-        if self.use_cls:
-            features_2d = features.reshape(self.c, int(self.D/self.c))
-            features_up = self.upsample(features_2d)
-            A_hat = features_up.reshape(1, self.c, self.H, self.H)
-            A_hat = self.smooth(A_hat)           
-
-        elif self.hypersig:
-            if features.dim() == 2:
-                features = features.reshape(1, 4*self.D, self.alpha, self.alpha)
-            features_up = F.interpolate(features, size=(self.H, self.H), mode='bilinear', align_corners=True)
-            # noise = torch.rand_like(features_up)
-
-            A_hat = self.abundance_estimator_nobn(features_up)
-
-        else:
-            features = features.reshape(self.D, self.n_features*self.alpha*self.alpha)
-            features_up = self.upsample(features)
-            features_up = features_up.view(
-                1, self.D, self.H, self.H
-            )
-            noise = torch.rand_like(features_up)
-
-            A_hat = self.abundance_estimator_nobn(features_up)
-
-        A_hat = self.sum_to_one(A_hat)
-
-        return A_hat  
-    
     def get_endmembers(self):
         return self.decoder.get_endmembers()
-    
-    def forward_nobn(self, features):
-        A_hat = self.get_abundances_nobn(features)
-        Y_hat = self.decoder(A_hat)
-        E_hat = self.decoder.get_endmembers()
-
-        return E_hat, A_hat, Y_hat
     
     def forward(self, features):
         A_hat = self.get_abundances(features)
@@ -732,236 +694,39 @@ class Unmixing_from_features(nn.Module):
 
         return E_hat, A_hat, Y_hat
 
-
-class Unmixing_from_features2(nn.Module):
-    def __init__(self, D, B, c, H=224, alpha=None, n_features=1, no_bn=False):
-        """
-        Args:
-            D (int): The embed_dim
-            B (int): The number of spectral bands in the hsi
-            c (int): The number of endmembers to extract
-            H (int): The size of the input hsi
-            alpha (int): The size of the features
-            n_features (int): The size of the list of features in the case of several extracted features
-
-        """
-        super(Unmixing_from_features2, self).__init__()
-        self.D = D
-        self.alpha = alpha
-        self.B = B
-        self.c = c
-        self.H = H
-        self.n_features = n_features
-
-        # Upsampling features
-        self.upsample = nn.Sequential(
-            nn.Linear(self.n_features*(self.alpha**2), self.H**2)
-        )
-
-        # Upsampled features to abundances
-        self.abundance_estimator = nn.Sequential(
-            nn.Conv2d(D, c, kernel_size=1),
-            nn.LeakyReLU(0.02),
-            nn.BatchNorm2d(c),
-            nn.Dropout(0.2)
-        )
-
-        if no_bn:
-            self.abundance_estimator_nobn = nn.Sequential(
-                nn.Conv2d(D, c, kernel_size=1),
-                nn.LeakyReLU(0.02),
-                nn.Dropout(0.2)
-            )
-
-        self.norm = nn.LayerNorm([self.D, self.H, self.H])
-
-        self.sum_to_one = Sum_to_one()
-        self.decoder = Decoder(B=B, c=c)
-
-    @staticmethod
-    def weights_init(m):
-        if type(m) == nn.Conv2d:
-            nn.init.kaiming_normal_(m.weight.data)
-
-    @staticmethod
-    def loss(Y_gt, Y_hat, A_hat, E_hat, W_sad=1, W_ab=0.35, W_tv_e=0.1, W_tv_a=0, W_mse=0):
-        sad = utils.SADLoss()
-        mse = nn.MSELoss(reduction='sum')
+class MLAP_AE(nn.Module):
+    def __init__(self, c, in_size, seed=None):
+        super(MLAP_AE, self).__init__()
         
-        loss_sad = sad(Y_gt, Y_hat)
-        loss_ab = torch.sqrt(A_hat).mean()
-        loss_mse = mse(Y_gt, Y_hat)/(torch.norm(Y_gt)**2)
-
-        # TV on endmembers (sum of difference between consecutive endmembers)
-        loss_tv_e = (torch.abs(E_hat[:, 1:] - E_hat[:, :-1]).sum())
-
-        # TV on abundances (sum of difference between consecutive horizontal pixels + vertical pixels)
-        loss_tv_a = torch.abs(A_hat[:, :, :, 1:] - A_hat[:, :, :, :-1]).sum() + torch.abs(A_hat[:, :, 1:, :] - A_hat[:, :, :-1, :]).sum()
-
-        loss = W_sad * loss_sad + W_ab * loss_ab + W_tv_e * loss_tv_e + W_tv_a * loss_tv_a + W_mse * loss_mse 
-
-        return loss, loss_sad, loss_ab, loss_tv_e, loss_tv_a, loss_mse
-
-    def get_abundances(self, features):
-
-        features = features.reshape(self.D, self.n_features*self.alpha*self.alpha)
-        features_up = self.upsample(features)
-        features_up = features_up.view(
-            1, self.D, self.H, self.H
+        if seed is not None:
+            torch.manual_seed(seed)
+        
+        self.encoder = nn.Sequential(
+            nn.Linear(in_size, 256),
+            nn.Dropout(),
+            nn.Tanh(),
+            nn.Linear(256, 128),
+            nn.Tanh(),
+            nn.Linear(128, 32),
+            nn.ReLU(),
+            nn.Linear(32, c)
         )
-        features_up = self.norm(features_up)
-        A_hat = self.abundance_estimator(features_up)
-
-        A_hat = self.sum_to_one(A_hat)
-
-        return A_hat
-
-    def get_abundances_nobn(self, features):
-
-        features = features.reshape(self.D, self.n_features*self.alpha*self.alpha)
-        features_up = self.upsample(features)
-        features_up = features_up.view(
-            1, self.D, self.H, self.H
+        
+        self.decoder = nn.Sequential(
+            nn.Linear(c, 32),
+            nn.Sigmoid(),
+            nn.Linear(32, 128),
+            nn.Sigmoid(),
+            nn.Linear(128, 256),
+            nn.Sigmoid(),
+            nn.Linear(256, in_size),
+            nn.Sigmoid()            
         )
-        features_up = self.norm(features_up)
-        A_hat = self.abundance_estimator_nobn(features_up)
-
-        A_hat = self.sum_to_one(A_hat)
-
-        return A_hat
     
-    def get_endmembers(self):
-        return self.decoder.get_endmembers()
-    
-    def forward_nobn(self, features):
-        A_hat = self.get_abundances_nobn(features)
-        Y_hat = self.decoder(A_hat)
-        E_hat = self.decoder.get_endmembers()
+    def forward(self, x):
+        encoded = self.encoder(x)
+        abund = F.softmax(encoded)
+        x_hat = self.decoder(abund)
+        e_est = self.decoder.weight.data
+        return e_est, abund, x_hat
 
-        return E_hat, A_hat, Y_hat
-    
-    def forward(self, features):
-        A_hat = self.get_abundances(features)
-        Y_hat = self.decoder(A_hat)
-        E_hat = self.decoder.get_endmembers()
-
-        return E_hat, A_hat, Y_hat
-
-# class Unmixing_from_features(nn.Module):
-#     def __init__(self, D, B, c):
-#         super(Unmixing_from_features, self).__init__()
-#         self.D = D
-#         self.B = B
-#         self.c = c
-
-#         self.conv1 = nn.Sequential(
-#             nn.Conv2d(D*4, D*2, kernel_size=(3, 3), padding=1),
-#             nn.LeakyReLU(0.02),
-#             nn.BatchNorm2d(D*2),
-#             nn.Dropout(0.2),
-#             nn.Conv2d(D*2,  D, kernel_size=(1, 1)) )
-#         self.conv2 = nn.Sequential(
-#             nn.Conv2d(D, c, kernel_size=1),
-#             nn.LeakyReLU(0.02),
-#             nn.BatchNorm2d(c),
-#             nn.Dropout(0.2),
-#         )
-
-#         self.sum_to_one = Sum_to_one()
-#         self.decoder = Decoder(B=B, c=c)
-    
-#     def abundances_from_features(self, features):
-
-#         self.p = self.p = int(features.shape[1] ** 0.5)
-#         features_2d = features.view(
-#             1, 4*self.D, self.p, self.p
-#         )
-#         features_up = F.interpolate(
-#             features_2d,
-#             scale_factor=16,
-#             mode="bilinear",
-#             align_corners=True
-#         )
-
-#         patch_D = self.conv1(features_up)
-#         A_hat   = self.conv2(patch_D)
-#         A_hat   = self.sum_to_one(A_hat)
-
-#         return A_hat
-    
-#     def forward(self, features):
-#         A_hat = self.abundances_from_features(features)
-#         Y_hat = self.decoder(A_hat)
-#         E_hat = self.decoder.get_endmembers()
-
-#         return E_hat, A_hat, Y_hat
-
-# class Abundances_from_features(nn.Module):
-#     """
-#     A lightweight "encoder" using ViT 1D feature vector and input HSI to obtain abundances estimates
-#     Assumes a square image (H=W)
-    
-#     Args:
-#         c (int): the number of endmembers to extract
-#         H (int): the shape of the input HSI
-#         B (int): the number of spectral bands in the input HSI
-#     """
-#     def __init__(self, c, H, B):
-#         super().__init__()
-#         self.H = H
-#         self.c = c
-#         self.B = B
-
-#         # Step 1: Upsample from 16 to 64
-#         self.upsample1 = nn.ConvTranspose2d(
-#             in_channels=3,
-#             out_channels=3,
-#             kernel_size=8,
-#             stride=4,
-#             padding=2,
-#         )
-#         # Step 2: Upsample from 64 to H
-#         stride2 = H // 64
-#         kernel_size2 = 2 * stride2
-#         padding2 = kernel_size2 // 2 - 1
-#         self.upsample2 = nn.ConvTranspose2d(
-#             in_channels=3,
-#             out_channels=3,
-#             kernel_size=kernel_size2,
-#             stride=stride2,
-#             padding=padding2,
-#         )
-
-#         # Reduce y channels: (B, H, H) -> (32, H, H)
-#         self.reduce_y = nn.Conv2d(B, 32, kernel_size=1)
-
-#         # Merge features: (32 + 3, H, H) -> (c, H, H)
-#         self.merge = nn.Sequential(
-#             nn.Conv2d(32 + 3, 32, kernel_size=1),
-#             nn.ReLU(),
-#             nn.Conv2d(32, c, kernel_size=1),
-#         )
-
-#     def forward(self, features, y):
-#         """
-#         Args:
-#             features: (1, 768)
-#             y: (B, H, H)
-#         Returns:
-#             output: (c, H, H)
-#         """
-#         # Reshape features to (3, 16, 16)
-#         features = features.view(3, 16, 16).unsqueeze(0)
-#         upsampled = self.upsample1(features) # -> (3, 64, 64)
-#         upsampled = self.upsample2(upsampled) # -> (3, H, H)
-
-#         # If H is not divisible by 64, crop or interpolate
-#         if upsampled.shape[2] != self.H:
-#             upsampled = F.interpolate(upsampled, size=(self.H, self.H), mode='bilinear')
-
-#         y = y.unsqueeze(0)
-#         reduced_y = self.reduce_y(y) # (32, H, H)
-
-#         concatenated = torch.cat([reduced_y, upsampled], dim=1)
-#         output = self.merge(concatenated) # (c, H, H)
-#         return output.squeeze(0)

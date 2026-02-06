@@ -359,6 +359,7 @@ def FCLS(Y, E):
     scaling = ones_row @ eet_inv @ ones_col
     sum_ls = ones_row @ abd_ls  # (1 x N)
     abd_fcls = abd_ls - eet_inv @ ones_col @ (1 / scaling) * (sum_ls - 1)
+    # abd_fcls = abd_ls
 
     # Clip negative abundances to zero
     abd_clipped = torch.clamp(abd_fcls, min=0)
