@@ -8,6 +8,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 import sys
 import argparse
 import os
+from timm.models.vision_transformer import Block
 
 import src.utils.utils as utils
 
@@ -27,7 +28,7 @@ from HyperFree import build_HyperFree_vit_b, predictor
 from HyperFree.modeling import image_encoder
 
 sys.path.append(f"{global_path}/DOFA")
-from dofa_v1 import vit_base_patch16
+from wave_dynamic_layer import Dynamic_MLP_OFA
 
 sys.path.append(f"{global_path}/HyperSIGMA/HyperspectralUnmixing")
 from models.model import SpatViT, SpecViT
@@ -40,80 +41,6 @@ else:
     dev = "cpu"
 
 MODELS = ["SpectralEarth", "SpectralGPT", "DOFA", "HyperFree", "HyperSL", "HyperSIGMA"]
-
-def create_fm(fm_name, Y, c=None, n_features=1, patch_size=64, use_cls=False, extend_cls=False):
-    batch, B, H, _ = Y.shape
-    device = Y.device
-
-    if fm_name == "DOFA":
-        check_point = torch.load('/home/ids/edabier/HSU/DOFA/checkpoints/DOFA_ViT_base_e100.pth', map_location=device)
-        fm = vit_base_patch16(n_features=n_features, use_cls=use_cls, extend_cls=extend_cls)
-        fm.load_state_dict(check_point, strict=False)
-
-    elif fm_name == "HyperFree":
-        checkpoint = torch.load("/home/ids/edabier/HSU/HyperFree/data/HyperFree-b.pth", map_location=device)
-        fm = image_encoder.ImageEncoderViT(depth=12, embed_dim=768,
-                img_size=H, mlp_ratio=4, norm_layer=partial(torch.nn.LayerNorm, eps=1e-6),
-                num_heads=12, patch_size=patch_size, qkv_bias=True,
-                use_rel_pos=True, global_attn_indexes=[5, 8, 11],
-                merge_indexs = [3, 12], window_size=14, out_chans=256)
-        fm.load_state_dict(checkpoint, strict=False)
-
-    elif fm_name == "HyperSIGMA":
-        embed_dim, seg_patches, NUM_TOKENS, scale = 768, 2, 64, 1
-        fm = HyperSIGMA_Unmix(patch_size=patch_size, channels=B, seg_patches=seg_patches, NUM_TOKENS=NUM_TOKENS, embed_dim=embed_dim, num_em=c, scale=scale)
-
-        spat_path = "/home/ids/edabier/HSU/HyperSIGMA/HyperspectralUnmixing/data/spat-vit-base-ultra-checkpoint-1599.pth"
-        spec_path = "/home/ids/edabier/HSU/HyperSIGMA/HyperspectralUnmixing/data/spec-vit-base-ultra-checkpoint-1599.pth"
-        Spat_pernet = torch.load(spat_path, map_location=torch.device('cpu'), weights_only=False)
-        Spat_pernet = Spat_pernet['model']
-        for k in list(Spat_pernet.keys()):
-            if 'patch_embed.proj' in k:
-                del Spat_pernet[k]
-        for k in list(Spat_pernet.keys()):
-            k_ = 'spat_encoder.' + k
-            Spat_pernet[k_] = Spat_pernet.pop(k)
-
-        Spec_pernet = torch.load(spec_path, map_location=torch.device('cpu'), weights_only=False)
-        Spec_pernet = Spec_pernet['model']
-        for k in list(Spec_pernet.keys()):
-            if 'spec' in k:
-                del Spec_pernet[k]
-            if 'spat' in k:
-                del Spec_pernet[k]
-        for k in list(Spec_pernet.keys()):
-            k_ = 'spec_encoder.' + k
-            Spec_pernet[k_] = Spec_pernet.pop(k)
-
-        model_params = fm.state_dict()
-        same_parsms = {k: v for k, v in Spat_pernet.items() if k in model_params.keys()}
-        model_params.update(same_parsms)
-        fm.load_state_dict(model_params)
-
-        same_parsms = {k: v for k, v in Spec_pernet.items() if k in model_params.keys()}
-        model_params.update(same_parsms)
-        fm.load_state_dict(model_params)
-
-    elif fm_name == "SpecViT":
-        fm = spec_vit.SpecViTBase()
-        checkpoint = torch.load("/home/ids/edabier/HSU/spectral_earth/data/data/spec_ViTb_mae.pth", map_location=dev)
-        fm.load_state_dict(checkpoint, strict=False)
-
-    elif fm_name == "SpecRnDino":
-        fm = spec_resnet.SpecResNet50(num_classes=0)
-        checkpoint = torch.load("/home/ids/edabier/HSU/spectral_earth/data/data/spec_rn50_dino.pth", map_location=dev)
-        fm.load_state_dict(checkpoint, strict=False)
-
-    elif fm_name == "SpecRnMoco":
-        fm = spec_resnet.SpecResNet50(num_classes=0)
-        checkpoint = torch.load("/home/ids/edabier/HSU/spectral_earth/data/data/spec_rn50_moco.pth", map_location=dev)
-        fm.load_state_dict(checkpoint, strict=False)
-    
-    else:
-        print("Fm name is not known, use DOFA, HyperFree, HyperSIGMA, SpecViT, SpecRnDino or SpecRnMoco")
-        return
-    
-    return fm
 
 class HyperSIGMA_Unmix(torch.nn.Module):
     def __init__(self, patch_size, channels, seg_patches, NUM_TOKENS, embed_dim, num_em, scale):
@@ -315,6 +242,166 @@ class HyperSIGMA_Unmix(torch.nn.Module):
         else:
             endmembers = np.squeeze(endmembers)
         return endmembers
+
+class OFAViT(nn.Module):
+    """ Masked Autoencoder with VisionTransformer backbone
+    """
+    def __init__(self, img_size=224, patch_size=16, drop_rate=0.,
+                 embed_dim=1024, depth=24, num_heads=16, out_indices=[23], wv_planes=128, num_classes=45,
+                 global_pool=True, mlp_ratio=4., norm_layer=nn.LayerNorm, use_cls=False, extend_cls=False):
+        super().__init__()
+
+        self.wv_planes = wv_planes
+        self.global_pool = global_pool
+        if self.global_pool:
+            norm_layer = norm_layer
+            embed_dim = embed_dim
+            self.fc_norm = norm_layer(embed_dim)
+        else:
+            self.norm = norm_layer(embed_dim)
+        
+        self.out_indices = out_indices
+        self.use_cls = use_cls
+        self.extend_cls = extend_cls
+
+        self.patch_embed = Dynamic_MLP_OFA(wv_planes=128, kernel_size=patch_size, embed_dim=embed_dim)
+        self.num_patches = (img_size // patch_size) ** 2
+        self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
+        self.pos_embed = nn.Parameter(torch.zeros(1, self.num_patches + 1, embed_dim), requires_grad=False)  # fixed sin-cos embedding
+
+        self.blocks = nn.ModuleList([
+            Block(embed_dim, num_heads, mlp_ratio, qkv_bias=True, norm_layer=norm_layer)
+            for i in range(depth)])
+
+        self.head_drop = nn.Dropout(drop_rate)
+        self.head = nn.Linear(embed_dim, num_classes) if num_classes > 0 else nn.Identity()
+
+    def forward_features(self, x, wave_list):
+        # embed patches
+        wavelist = torch.tensor(wave_list, device=x.device).float()
+        self.waves = wavelist
+        x, _ = self.patch_embed(x, self.waves)
+        x = x + self.pos_embed[:, 1:, :]
+        # append cls token
+        cls_token = self.cls_token + self.pos_embed[:, :1, :]
+        cls_tokens = cls_token.expand(x.shape[0], -1, -1)
+        x = torch.cat((cls_tokens, x), dim=1)
+
+        # apply Transformer blocks
+        features = []
+        for i, block in enumerate(self.blocks):
+            x = block(x)
+
+            # Use every block output of out_indices
+            # The final features will be (N*embed_dim, num_patches+1)
+            # Where N is the number of outputs in out_indices
+            if i in self.out_indices:
+                features.append(x[:, 1:, :].squeeze(0).T)
+
+        if self.use_cls:
+            features = x[:, 0, :]
+
+        elif self.extend_cls:
+            features = torch.cat(features, dim=0)
+            cls = x[:, 0, :].T
+            features = features + cls
+
+        else:
+            features = torch.cat(features, dim=0)
+
+        return features
+
+    def forward_head(self, x, pre_logits=False):
+        x = self.head_drop(x)
+        return x if pre_logits else self.head(x)
+
+    def forward(self, x, wave_list):
+        x = self.forward_features(x, wave_list)
+        x = self.forward_head(x)
+        return x
+
+def create_fm(fm_name, Y, c=None, n_features=1, patch_size=64, use_cls=False, extend_cls=False):
+    batch, B, H, _ = Y.shape
+    device = Y.device
+
+    if fm_name == "DOFA":
+        check_point = torch.load('/home/ids/edabier/HSU/DOFA/checkpoints/DOFA_ViT_base_e100.pth', map_location=device)
+        if n_features == 1:
+            out_indices = [11]
+        elif n_features == 4:
+            out_indices = [3,5,7,11]
+        elif n_features == 9:
+            out_indices = [i for i in range(3,12)]
+        fm = OFAViT(
+            img_size=224, patch_size=16, embed_dim=768, depth=12, num_heads=12, out_indices=out_indices, mlp_ratio=4,
+            norm_layer=partial(nn.LayerNorm, eps=1e-6), use_cls=use_cls, extend_cls=extend_cls)
+        
+        fm.load_state_dict(check_point, strict=False)
+
+    elif fm_name == "HyperFree":
+        checkpoint = torch.load("/home/ids/edabier/HSU/HyperFree/data/HyperFree-b.pth", map_location=device)
+        fm = image_encoder.ImageEncoderViT(depth=12, embed_dim=768,
+                img_size=H, mlp_ratio=4, norm_layer=partial(torch.nn.LayerNorm, eps=1e-6),
+                num_heads=12, patch_size=patch_size, qkv_bias=True,
+                use_rel_pos=True, global_attn_indexes=[5, 8, 11],
+                merge_indexs = [3, 12], window_size=14, out_chans=256)
+        fm.load_state_dict(checkpoint, strict=False)
+
+    elif fm_name == "HyperSIGMA":
+        embed_dim, seg_patches, NUM_TOKENS, scale = 768, 2, 64, 1
+        fm = HyperSIGMA_Unmix(patch_size=patch_size, channels=B, seg_patches=seg_patches, NUM_TOKENS=NUM_TOKENS, embed_dim=embed_dim, num_em=c, scale=scale)
+
+        spat_path = "/home/ids/edabier/HSU/HyperSIGMA/HyperspectralUnmixing/data/spat-vit-base-ultra-checkpoint-1599.pth"
+        spec_path = "/home/ids/edabier/HSU/HyperSIGMA/HyperspectralUnmixing/data/spec-vit-base-ultra-checkpoint-1599.pth"
+        Spat_pernet = torch.load(spat_path, map_location=torch.device('cpu'), weights_only=False)
+        Spat_pernet = Spat_pernet['model']
+        for k in list(Spat_pernet.keys()):
+            if 'patch_embed.proj' in k:
+                del Spat_pernet[k]
+        for k in list(Spat_pernet.keys()):
+            k_ = 'spat_encoder.' + k
+            Spat_pernet[k_] = Spat_pernet.pop(k)
+
+        Spec_pernet = torch.load(spec_path, map_location=torch.device('cpu'), weights_only=False)
+        Spec_pernet = Spec_pernet['model']
+        for k in list(Spec_pernet.keys()):
+            if 'spec' in k:
+                del Spec_pernet[k]
+            if 'spat' in k:
+                del Spec_pernet[k]
+        for k in list(Spec_pernet.keys()):
+            k_ = 'spec_encoder.' + k
+            Spec_pernet[k_] = Spec_pernet.pop(k)
+
+        model_params = fm.state_dict()
+        same_parsms = {k: v for k, v in Spat_pernet.items() if k in model_params.keys()}
+        model_params.update(same_parsms)
+        fm.load_state_dict(model_params)
+
+        same_parsms = {k: v for k, v in Spec_pernet.items() if k in model_params.keys()}
+        model_params.update(same_parsms)
+        fm.load_state_dict(model_params)
+
+    elif fm_name == "SpecViT":
+        fm = spec_vit.SpecViTBase()
+        checkpoint = torch.load("/home/ids/edabier/HSU/spectral_earth/data/data/spec_ViTb_mae.pth", map_location=dev)
+        fm.load_state_dict(checkpoint, strict=False)
+
+    elif fm_name == "SpecRnDino":
+        fm = spec_resnet.SpecResNet50(num_classes=0)
+        checkpoint = torch.load("/home/ids/edabier/HSU/spectral_earth/data/data/spec_rn50_dino.pth", map_location=dev)
+        fm.load_state_dict(checkpoint, strict=False)
+
+    elif fm_name == "SpecRnMoco":
+        fm = spec_resnet.SpecResNet50(num_classes=0)
+        checkpoint = torch.load("/home/ids/edabier/HSU/spectral_earth/data/data/spec_rn50_moco.pth", map_location=dev)
+        fm.load_state_dict(checkpoint, strict=False)
+    
+    else:
+        print("Fm name is not known, use DOFA, HyperFree, HyperSIGMA, SpecViT, SpecRnDino or SpecRnMoco")
+        return
+    
+    return fm
 
 def get_hypersigma_features(fm, Y, patch_size=64):
     """
