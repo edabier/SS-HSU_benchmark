@@ -82,8 +82,8 @@ def order_endmembers(E_gt, E_hat, A_hat=None):
     for batch in range(E_gt.size()[0]):
         E0 = F.normalize(E_gt[batch,:,:],p=2.0,dim=0) # Une seule matrice (plus de mini-batch)
         E = F.normalize(E_hat[batch,:,:],p=2.0,dim=0) # Une seule matrice (plus de mini-batch)
-        E0 = E0.to(torch.float64)   
-        E = E.to(torch.float64)
+        E0 = E0.to(torch.float32)   
+        E = E.to(torch.float32)
         
         dot_products = E0.T @ E
         costmat = torch.acos(torch.clamp(dot_products, -1.0, 1.0))
@@ -91,7 +91,7 @@ def order_endmembers(E_gt, E_hat, A_hat=None):
         m = Munkres()
         Jperm = m.compute(costmat.tolist())
         
-        EPerm = torch.zeros(E0.shape, dtype=torch.float64)
+        EPerm = torch.zeros(E0.shape, dtype=torch.float32)
         EPerm_norm = torch.zeros(E0.shape)
         perm_indices = torch.zeros(E0.shape[1])
     
@@ -310,29 +310,10 @@ def plot_losses(total_loss, loss_sad, loss_ab, loss_tv, loss_mse):
     plt.tight_layout()
     plt.show()
 
-def plot_results(E_hat, A_hat, A_gt=None, E_gt=None, model_name=None, normalize_E=False, normalize_A=False, plot_only_E=False, plot_only_A=False, return_results=False, verbose=False):
+def plot_results(E_hat=None, A_hat=None, A_gt=None, E_gt=None, model_name=None, normalize_E=False, normalize_A=False, return_results=False, verbose=False):
     """
     Displays the predicted endmembers and abundances
     """
-    if E_hat.dim() == 3:
-        if verbose:
-            print("Not taking batched E_hat")
-        E_hat = E_hat[0]
-        
-    if E_gt != None and E_gt.dim() == 3:
-        if verbose:
-            print("Not taking batched E_gt")
-        E_gt = E_gt[0]
-
-    if A_hat.dim() == 4:
-        if verbose:
-            print("Not taking batched A_hat")
-        A_hat = A_hat[0]
-
-    if A_gt != None and A_gt.dim() == 4:
-        if verbose:
-            print("Not taking batched A_gt")
-        A_gt = A_gt[0]
 
     c = E_hat.shape[1]
     n_graph = c // 2
@@ -341,8 +322,17 @@ def plot_results(E_hat, A_hat, A_gt=None, E_gt=None, model_name=None, normalize_
     sad = SADLoss()
     mse = nn.MSELoss(reduction="sum")
 
-    if not plot_only_A:
+    if E_hat != None:
+        if E_hat.dim() == 3:
+            if verbose:
+                print("Not taking batched E_hat")    
+            E_hat = E_hat[0]
+            
         if E_gt != None:
+            if E_gt.dim() == 3:
+                if verbose:
+                    print("Not taking batched E_gt")
+                E_gt = E_gt[0]
 
             E_hat, _, A_hat, _ = order_endmembers(E_gt, E_hat, A_hat)
             
@@ -378,44 +368,41 @@ def plot_results(E_hat, A_hat, A_gt=None, E_gt=None, model_name=None, normalize_
                 ax = plt.subplot(2, n_graph, i + 1)
                 plt.plot(E_hat[:, i].detach().cpu(), 'k-', linewidth=1.0, label='predict')
 
-    if not plot_only_E:
-        if A_gt != None:
+    if A_gt != None:
+        if A_hat.dim() == 4:
+            if verbose:
+                print("Not taking batched A_hat")
+            A_hat = A_hat[0]
+        
+        if A_gt.dim() == 4:
+                if verbose:
+                    print("Not taking batched A_gt")
+                A_gt = A_gt[0]
+    
+        if normalize_A:
+            A_hat = normalize(A_hat)
 
-            if normalize_A:
-                A_hat = normalize(A_hat)
+        fig, axes = plt.subplots(2, A_hat.shape[0], figsize=(10, 5))
+        for i in range(A_hat.shape[0]):
+            pred = axes[0, i].imshow(A_hat[i].detach().cpu())
+            axes[0, i].set_title(f"NMSE = {format(mse(A_gt[i], A_hat[i])/(torch.norm(A_gt[i])**2), '.2f')}")
+            axes[0, i].axis('off')
 
-            fig, axes = plt.subplots(2, A_hat.shape[0], figsize=(10, 5))
-            for i in range(A_hat.shape[0]):
-                pred = axes[0, i].imshow(A_hat[i].detach().cpu())
-                axes[0, i].set_title(f"NMSE = {format(mse(A_gt[i], A_hat[i])/(torch.norm(A_gt[i])**2), '.2f')}")
-                axes[0, i].axis('off')
+            gt = axes[1, i].imshow(A_gt[i].detach().cpu())
+            axes[1, i].axis('off')
 
-                gt = axes[1, i].imshow(A_gt[i].detach().cpu())
-                axes[1, i].axis('off')
+        fig.colorbar(pred, ax=axes[0, -1], fraction=0.046, pad=0.04)
+        fig.colorbar(gt, ax=axes[1, -1], fraction=0.046, pad=0.04)
+        fig.text(0.05, 0.7, 'prediction', va='center', ha='center', fontsize=12, rotation='vertical')
+        fig.text(0.05, 0.4, 'gt', va='center', ha='center', fontsize=12, rotation='vertical')
+        plt.subplots_adjust(left=0.1, right=0.9, top=0.5, bottom=0.1, wspace=0.1, hspace=0.5)
+        fig.tight_layout(rect=[0.05, 0.25, 0.95, 0.9])
 
-            fig.colorbar(pred, ax=axes[0, -1], fraction=0.046, pad=0.04)
-            fig.colorbar(gt, ax=axes[1, -1], fraction=0.046, pad=0.04)
-            fig.text(0.05, 0.7, 'prediction', va='center', ha='center', fontsize=12, rotation='vertical')
-            fig.text(0.05, 0.4, 'gt', va='center', ha='center', fontsize=12, rotation='vertical')
-            plt.subplots_adjust(left=0.1, right=0.9, top=0.5, bottom=0.1, wspace=0.1, hspace=0.5)
-            fig.tight_layout(rect=[0.05, 0.25, 0.95, 0.9])
-
-            total_mse = mse(A_gt, A_hat)/(torch.norm(A_gt)**2)
-            if model_name != None:
-                plt.suptitle(f"{model_name} abundance estimation, NMSE = {format(total_mse, '.3f')}")
-            else:
-                plt.suptitle(f"Abundance estimation, NMSE = {format(total_mse, '.3f')}")
+        total_mse = mse(A_gt, A_hat)/(torch.norm(A_gt)**2)
+        if model_name != None:
+            plt.suptitle(f"{model_name} abundance estimation, NMSE = {format(total_mse, '.3f')}")
         else:
-            fig, axes = plt.subplots(1, A_hat.shape[0], figsize=(10, 5))
-            if model_name != None:
-                plt.suptitle(f'{model_name} abundance estimation')
-            else:
-                plt.suptitle('Abundance estimation')
-            axes[0].set_title(f"Prediction", fontsize=12)
-            for i in range(A_hat.shape[0]):
-                pred = axes[i].imshow(A_hat[i].detach().cpu())
-                axes[i].axis('off')
-            bar = plt.colorbar(pred)
+            plt.suptitle(f"Abundance estimation, NMSE = {format(total_mse, '.3f')}")
     
     if return_results:
         return total_sad, total_mse
@@ -539,30 +526,29 @@ def oneD_to_2d(Y):
         H = int(N**0.5)
         return Y.reshape(B, H, H)
 
+def sum_to_one(Y, batched=False):
+    """
+    Normalizes the input tensor so that each image sums to 1 in the case of abundances and hsi
+    And for endmembers, use batched=False, each endmember sums to 1
+    """
+    
+    if batched:
+        Y = Y/torch.sum(Y, dim=1)
+    
+    else:
+        Y = Y/torch.sum(Y, dim=0)
+    
+    return Y
+
 def normalize(Y, dim=0):
     """
     Normalizes the input tensor along the given dimension
     For abundances, must be of shape (c, H, W)
     For endmembers, must be of shape (B, c)
     """
-    # shape = Y.shape
-
-    # In the case of abundances/ HSIs
-    if Y.dim() == 3:
-        max_values = torch.amax(torch.abs(Y), dim=[d for d in range(Y.dim()) if d != dim], keepdim=True)
-        max_values[max_values == 0] = 1
-        Y_normalized = Y / max_values
-        # c, H, W = Y.shape
-        # Y_reshaped = Y.reshape(c, H*W)
-        # max_vals = Y_reshaped.max(dim=1)[0].view(c, 1, 1)
-        # eps = 1e-8
-        # Y_normalized = Y / (max_vals + eps)
-        # Y_normalized = torch.clamp(Y_normalized, 0, 1)
-
-    elif Y.dim() == 2:
-        max_values = torch.amax(torch.abs(Y), dim=[d for d in range(Y.dim()) if d != dim], keepdim=True)
-        max_values[max_values == 0] = 1
-        Y_normalized = Y / max_values
+    max_values = torch.amax(torch.abs(Y), dim=[d for d in range(Y.dim()) if d != dim], keepdim=True)
+    max_values[max_values == 0] = 1
+    Y_normalized = Y / max_values
 
     return Y_normalized
 

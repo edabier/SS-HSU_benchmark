@@ -12,26 +12,27 @@ from timm.models.vision_transformer import Block
 
 import src.utils.utils as utils
 
-global_path = "/home/ids/edabier/HSU"
+# global_path = "/home/ids/edabier/HSU"
+global_path = "/Users/edabier/Documents/Thèse/Thèse_Télécom"
 sys.path.append(global_path)
 
-sys.path.append("home/ids/edabier/HSU/spectral_earth")
+sys.path.append(f"{global_path}/spectral_earth")
 from spectral_earth.src.backbones import spec_vit
 from spectral_earth.src.backbones import spec_resnet
 from spectral_earth.src.backbones.spec_vit import SpecViTBase
 
-sys.path.append(f"{global_path}/IEEE_TPAMI_SpectralGPT")
-import models_mae_spectral
+# sys.path.append(f"{global_path}/IEEE_TPAMI_SpectralGPT")
+# import models_mae_spectral
 
-sys.path.append(f"{global_path}/HyperFree")
-from HyperFree import build_HyperFree_vit_b, predictor
-from HyperFree.modeling import image_encoder
+# sys.path.append(f"{global_path}/HyperFree")
+# from HyperFree import build_HyperFree_vit_b, predictor
+# from HyperFree.modeling import image_encoder
 
 sys.path.append(f"{global_path}/DOFA")
 from wave_dynamic_layer import Dynamic_MLP_OFA
 
-sys.path.append(f"{global_path}/HyperSIGMA/HyperspectralUnmixing")
-from models.model import SpatViT, SpecViT
+# sys.path.append(f"{global_path}/HyperSIGMA/HyperspectralUnmixing")
+# from models.model import SpatViT, SpecViT
 
 if torch.cuda.is_available():
     dev = "cuda:0"
@@ -320,12 +321,12 @@ class OFAViT(nn.Module):
         x = self.forward_head(x)
         return x
 
-def create_fm(fm_name, Y, c=None, n_features=1, patch_size=64, use_cls=False, extend_cls=False):
+def create_fm(fm_name, Y, c=None, n_features=1, patch_size=64, use_cls=False, extend_cls=False, path="/home/ids/edabier/HSU"):
     batch, B, H, _ = Y.shape
     device = Y.device
 
     if fm_name == "DOFA":
-        check_point = torch.load('/home/ids/edabier/HSU/DOFA/checkpoints/DOFA_ViT_base_e100.pth', map_location=device)
+        check_point = torch.load(f'{path}/DOFA/checkpoints/DOFA_ViT_base_e100.pth', map_location=device)
         if n_features == 1:
             out_indices = [11]
         elif n_features == 4:
@@ -339,7 +340,7 @@ def create_fm(fm_name, Y, c=None, n_features=1, patch_size=64, use_cls=False, ex
         fm.load_state_dict(check_point, strict=False)
 
     elif fm_name == "HyperFree":
-        checkpoint = torch.load("/home/ids/edabier/HSU/HyperFree/data/HyperFree-b.pth", map_location=device)
+        checkpoint = torch.load(f"{path}/HyperFree/data/HyperFree-b.pth", map_location=device)
         fm = image_encoder.ImageEncoderViT(depth=12, embed_dim=768,
                 img_size=H, mlp_ratio=4, norm_layer=partial(torch.nn.LayerNorm, eps=1e-6),
                 num_heads=12, patch_size=patch_size, qkv_bias=True,
@@ -351,8 +352,8 @@ def create_fm(fm_name, Y, c=None, n_features=1, patch_size=64, use_cls=False, ex
         embed_dim, seg_patches, NUM_TOKENS, scale = 768, 2, 64, 1
         fm = HyperSIGMA_Unmix(patch_size=patch_size, channels=B, seg_patches=seg_patches, NUM_TOKENS=NUM_TOKENS, embed_dim=embed_dim, num_em=c, scale=scale)
 
-        spat_path = "/home/ids/edabier/HSU/HyperSIGMA/HyperspectralUnmixing/data/spat-vit-base-ultra-checkpoint-1599.pth"
-        spec_path = "/home/ids/edabier/HSU/HyperSIGMA/HyperspectralUnmixing/data/spec-vit-base-ultra-checkpoint-1599.pth"
+        spat_path = f"{path}/HyperSIGMA/HyperspectralUnmixing/data/spat-vit-base-ultra-checkpoint-1599.pth"
+        spec_path = f"{path}/HyperSIGMA/HyperspectralUnmixing/data/spec-vit-base-ultra-checkpoint-1599.pth"
         Spat_pernet = torch.load(spat_path, map_location=torch.device('cpu'), weights_only=False)
         Spat_pernet = Spat_pernet['model']
         for k in list(Spat_pernet.keys()):
@@ -384,17 +385,17 @@ def create_fm(fm_name, Y, c=None, n_features=1, patch_size=64, use_cls=False, ex
 
     elif fm_name == "SpecViT":
         fm = spec_vit.SpecViTBase()
-        checkpoint = torch.load("/home/ids/edabier/HSU/spectral_earth/data/data/spec_ViTb_mae.pth", map_location=dev)
+        checkpoint = torch.load(f"{path}/spectral_earth/data/data/spec_ViTb_mae.pth", map_location=dev)
         fm.load_state_dict(checkpoint, strict=False)
 
     elif fm_name == "SpecRnDino":
         fm = spec_resnet.SpecResNet50(num_classes=0)
-        checkpoint = torch.load("/home/ids/edabier/HSU/spectral_earth/data/data/spec_rn50_dino.pth", map_location=dev)
+        checkpoint = torch.load(f"{path}/spectral_earth/data/data/spec_rn50_dino.pth", map_location=dev)
         fm.load_state_dict(checkpoint, strict=False)
 
     elif fm_name == "SpecRnMoco":
         fm = spec_resnet.SpecResNet50(num_classes=0)
-        checkpoint = torch.load("/home/ids/edabier/HSU/spectral_earth/data/data/spec_rn50_moco.pth", map_location=dev)
+        checkpoint = torch.load(f"{path}/spectral_earth/data/data/spec_rn50_moco.pth", map_location=dev)
         fm.load_state_dict(checkpoint, strict=False)
     
     else:
@@ -711,25 +712,29 @@ class Unmixing_from_features(nn.Module):
             nn.init.kaiming_normal_(m.weight.data)
 
     @staticmethod
-    def loss(Y_gt, Y_hat, A_hat, E_hat, W_sad=1, W_ab=0.35, W_tv_e=0.1, W_tv_a=0, W_mse=0):
+    def loss(Y_gt, Y_hat, A_hat, E_hat, W_sad=1, W_ab=0.35, W_tv_e=0.1, W_tv_a=0, W_mse=0, W_e=0):
         sad = utils.SADLoss()
         tv = utils.TVLoss(reduction="mean")
         mse = nn.MSELoss(reduction='sum')
         
-        loss_sad = sad(Y_gt, Y_hat)
-        loss_ab = torch.sqrt(A_hat).mean()
-        loss_mse = mse(Y_gt, Y_hat)/(torch.norm(Y_gt)**2)
+        loss_sad = W_sad * sad(Y_gt, Y_hat)
+        loss_ab = W_ab * torch.sqrt(A_hat).mean()
+        loss_mse = W_mse * mse(Y_gt, Y_hat)/(torch.norm(Y_gt)**2)
+        
+        # Enforce Sum of all wavelength to be 1 for each endmember:
+        # Minimize 1 - sum(E[:,i]) for i in c
+        loss_norm_e = W_e * torch.norm(torch.ones(E_hat.shape[1]) - torch.sum(E_hat, dim=0))
 
         # TV on endmembers (sum of difference between consecutive endmembers)
-        loss_tv_e = (torch.abs(E_hat[:, 1:] - E_hat[:, :-1]).sum())
+        loss_tv_e = W_tv_e * (torch.abs(E_hat[:, 1:] - E_hat[:, :-1]).sum())
 
         # TV on abundances (sum of difference between consecutive horizontal pixels + vertical pixels)
-        # loss_tv_a = torch.abs(A_hat[:, :, :, 1:] - A_hat[:, :, :, :-1]).sum() + torch.abs(A_hat[:, :, 1:, :] - A_hat[:, :, :-1, :]).sum()
-        loss_tv_a = tv(A_hat)
+        # loss_tv_a = W_tv_a * torch.abs(A_hat[:, :, :, 1:] - A_hat[:, :, :, :-1]).sum() + torch.abs(A_hat[:, :, 1:, :] - A_hat[:, :, :-1, :]).sum()
+        loss_tv_a = W_tv_a * tv(A_hat)
 
-        loss = W_sad * loss_sad + W_ab * loss_ab + W_tv_e * loss_tv_e + W_tv_a * loss_tv_a + W_mse * loss_mse 
+        loss = loss_sad + loss_ab + loss_tv_e + loss_tv_a + loss_mse + loss_norm_e
 
-        return loss, loss_sad, loss_ab, loss_tv_e, loss_tv_a, loss_mse
+        return loss, loss_sad, loss_ab, loss_tv_e, loss_tv_a, loss_mse, loss_norm_e
 
     @staticmethod
     def supervised_loss(Y_gt, Y_hat, A_gt, A_hat, E_gt, E_hat):
