@@ -12,8 +12,8 @@ from timm.models.vision_transformer import Block
 
 import src.utils.utils as utils
 
-# global_path = "/home/ids/edabier/HSU"
-global_path = "/Users/edabier/Documents/Thèse/Thèse_Télécom"
+global_path = "/home/ids/edabier/HSU"
+# global_path = "/Users/edabier/Documents/Thèse/Thèse_Télécom"
 sys.path.append(global_path)
 
 sys.path.append(f"{global_path}/spectral_earth")
@@ -21,18 +21,18 @@ from spectral_earth.src.backbones import spec_vit
 from spectral_earth.src.backbones import spec_resnet
 from spectral_earth.src.backbones.spec_vit import SpecViTBase
 
-# sys.path.append(f"{global_path}/IEEE_TPAMI_SpectralGPT")
-# import models_mae_spectral
+sys.path.append(f"{global_path}/IEEE_TPAMI_SpectralGPT")
+import models_mae_spectral
 
-# sys.path.append(f"{global_path}/HyperFree")
-# from HyperFree import build_HyperFree_vit_b, predictor
-# from HyperFree.modeling import image_encoder
+sys.path.append(f"{global_path}/HyperFree")
+from HyperFree import build_HyperFree_vit_b, predictor
+from HyperFree.modeling import image_encoder
 
 sys.path.append(f"{global_path}/DOFA")
 from wave_dynamic_layer import Dynamic_MLP_OFA
 
-# sys.path.append(f"{global_path}/HyperSIGMA/HyperspectralUnmixing")
-# from models.model import SpatViT, SpecViT
+sys.path.append(f"{global_path}/HyperSIGMA/HyperspectralUnmixing")
+from models.model import SpatViT, SpecViT
 
 if torch.cuda.is_available():
     dev = "cuda:0"
@@ -404,6 +404,37 @@ def create_fm(fm_name, Y, c=None, n_features=1, patch_size=64, use_cls=False, ex
     
     return fm
 
+def extract_f(fm_name, fm, Y, A, new_H, wavelengths, use_cls=False):
+    if fm_name == "DOFA":
+        if Y.shape[-1] < new_H:
+            Y = F.interpolate(Y, size=(new_H,new_H))
+        Y = Y[:,:,:new_H, :new_H]
+        
+        if A.shape[-1] < new_H:
+            A = F.interpolate(A, size=(new_H,new_H))
+        A = A[:,:,:new_H, :new_H]
+
+        features = get_dofa_features(fm, Y, wavelengths)
+        noise = torch.rand_like(features)
+
+    elif fm_name == "HyperFree":
+        features = get_hyperfree_features(fm, Y, wavelengths)
+        noise = torch.rand_like(features)
+
+    elif fm_name == "SpecViT":
+        if Y.shape[-1] < new_H:
+            Y = F.interpolate(Y, size=(new_H,new_H))
+        Y = Y[:,:,:new_H, :new_H]
+        
+        if A.shape[-1] < new_H:
+            A = F.interpolate(A, size=(new_H,new_H))
+        A = A[:,:,:new_H, :new_H]
+
+        features = get_specvit_features(fm, Y, use_cls)
+        noise = torch.rand_like(features)
+    
+    return Y, A, features
+
 def get_hypersigma_features(fm, Y, patch_size=64):
     """
     Extracts features from the input HSI (features must be extracted patch by patch, 
@@ -712,14 +743,18 @@ class Unmixing_from_features(nn.Module):
             nn.init.kaiming_normal_(m.weight.data)
 
     @staticmethod
-    def loss(Y_gt, Y_hat, A_hat, E_hat, W_sad=1, W_ab=0.35, W_tv_e=0.1, W_tv_a=0, W_mse=0, W_e=0):
+    def loss(Y_gt, Y_hat, A_hat, E_hat, W_sad=1, W_ab=0.35, W_tv_e=0.1, W_tv_a=0, W_mse=0, W_e=0, hypersigma=False):
         sad = utils.SADLoss()
         tv = utils.TVLoss(reduction="mean")
         mse = nn.MSELoss(reduction='sum')
         
         loss_sad = W_sad * sad(Y_gt, Y_hat)
         loss_ab = W_ab * torch.sqrt(A_hat).mean()
-        loss_mse = W_mse * mse(Y_gt, Y_hat)/(torch.norm(Y_gt)**2)
+
+        if hypersigma:
+            loss_mse = W_mse * utils.hypersigma_mse(Y_gt, Y_hat)
+        else:
+            loss_mse = W_mse * mse(Y_gt, Y_hat)/(torch.norm(Y_gt)**2)
         
         # Enforce Sum of all wavelength to be 1 for each endmember:
         # Minimize 1 - sum(E[:,i]) for i in c
@@ -735,6 +770,19 @@ class Unmixing_from_features(nn.Module):
         loss = loss_sad + loss_ab + loss_tv_e + loss_tv_a + loss_mse + loss_norm_e
 
         return loss, loss_sad, loss_ab, loss_tv_e, loss_tv_a, loss_mse, loss_norm_e
+
+    def freeze_decoder(self):
+        """
+        Normalizes the weights of the decoder and freezes it
+        """
+        state_dict = self.decoder.state_dict()
+        E_hat = self.decoder.get_endmembers()
+        E_hat = utils.normalize(E_hat)
+        state_dict["decoder.weight"][:, :, 0, 0] = E_hat
+        self.decoder.load_state_dict(state_dict)
+
+        for param in self.decoder.parameters():
+            param.requires_grad = False
 
     @staticmethod
     def supervised_loss(Y_gt, Y_hat, A_gt, A_hat, E_gt, E_hat):
@@ -786,39 +834,56 @@ class Unmixing_from_features(nn.Module):
 
         return E_hat, A_hat, Y_hat
 
-class MLAP_AE(nn.Module):
-    def __init__(self, c, in_size, seed=None):
-        super(MLAP_AE, self).__init__()
-        
-        if seed is not None:
-            torch.manual_seed(seed)
-        
+class CNNAEU_with_decoder(nn.Module):
+    def __init__(self, B, c, decoder=None, E_init=None):
+        super().__init__()
+
+        self.B = B
+        self.c = c
         self.encoder = nn.Sequential(
-            nn.Linear(in_size, 256),
-            nn.Dropout(),
-            nn.Tanh(),
-            nn.Linear(256, 128),
-            nn.Tanh(),
-            nn.Linear(128, 32),
-            nn.ReLU(),
-            nn.Linear(32, c)
+            nn.Conv2d(self.B, 48, kernel_size=3, padding=1, padding_mode="reflect", bias=False),
+            nn.LeakyReLU(),
+            nn.BatchNorm2d(48),
+            nn.Dropout2d(p=0.2),
+            nn.Conv2d(48, self.c, kernel_size=1, bias=False),
+            nn.LeakyReLU(),
+            nn.BatchNorm2d(self.c),
+            nn.Dropout2d(p=0.2),
         )
-        
-        self.decoder = nn.Sequential(
-            nn.Linear(c, 32),
-            nn.Sigmoid(),
-            nn.Linear(32, 128),
-            nn.Sigmoid(),
-            nn.Linear(128, 256),
-            nn.Sigmoid(),
-            nn.Linear(256, in_size),
-            nn.Sigmoid()            
-        )
+        if decoder != None:
+            self.decoder = decoder
+        else:
+            self.decoder = Decoder(self.c, self.B)
+            if E_init != None:
+                state_dict = self.decoder.state_dict()
+                state_dict["decoder.weight"][:,:,0,0] = E_init
+                self.decoder.load_state_dict(state_dict)
+
+        for param in self.decoder.parameters():
+            param.requires_grad = False
+    
+    @staticmethod
+    def loss(E_gt, E_hat, A_gt, A_hat, Y_gt, Y_hat):
+        sad = utils.SADLoss()
+        return sad(Y_gt, Y_hat)
     
     def forward(self, x):
-        encoded = self.encoder(x)
-        abund = F.softmax(encoded)
+        # Input shape (batch, B, N)
+        
+        if x.dim() < 3:
+            x = x.unsqueeze(0) # Add a batch dimension for inference
+        
+        batch, B, N = x.shape
+        x = utils.oneD_to_2d(x)
+        
+        code = self.encoder(x)
+        
+        abund = F.softmax(code, dim=1)
+        a_hat = abund.reshape(batch, self.c, N)
+        
         x_hat = self.decoder(abund)
-        e_est = self.decoder.weight.data
-        return e_est, abund, x_hat
-
+        x_hat = x_hat.reshape(batch, B, N)
+        
+        e_hat = self.decoder.get_endmembers()
+        
+        return e_hat, a_hat, x_hat

@@ -102,7 +102,7 @@ class CNNAEU(nn.Module, HSUModel):
             nn.BatchNorm2d(self.c),
             nn.Dropout2d(p=0.2),
         )
-
+        
         self.decoder = nn.Conv2d(self.c, self.B, kernel_size=11, padding=5, padding_mode="reflect", bias=False)
 
     @staticmethod

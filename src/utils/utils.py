@@ -64,6 +64,20 @@ class SADLoss(nn.Module):
         loss = torch.mean(sad)
         return loss
 
+def hypersigma_mse(Y_gt, Y_hat):
+    # y_true:[num_em,H,W]
+    # y_pred:[num_em,H,W]
+
+    c = Y_gt.shape[0]
+    Y_gt = torch.reshape(Y_gt , [c, -1])
+    Y_hat = torch.reshape(Y_hat , [c, -1])
+
+    R = Y_hat - Y_gt
+    r = R*R
+    mse = torch.mean(r, axis=1)
+    mse = torch.sum(mse) / len(mse)
+    return mse
+
 def order_endmembers(E_gt, E_hat, A_hat=None):
     if E_hat.dim() == 2:
         E_hat = E_hat.unsqueeze(0)
@@ -310,23 +324,25 @@ def plot_losses(total_loss, loss_sad, loss_ab, loss_tv, loss_mse):
     plt.tight_layout()
     plt.show()
 
-def plot_results(E_hat=None, A_hat=None, A_gt=None, E_gt=None, model_name=None, normalize_E=False, normalize_A=False, return_results=False, verbose=False):
+def plot_results(E_hat=None, A_hat=None, A_gt=None, E_gt=None, model_name=None, normalize_E=False, normalize_A=False, return_results=False, verbose=False, hypersigma=False):
     """
     Displays the predicted endmembers and abundances
     """
-
-    c = E_hat.shape[1]
-    n_graph = c // 2
-    if c % 2 != 0: n_graph = n_graph + 1
+    n_graph = None
 
     sad = SADLoss()
     mse = nn.MSELoss(reduction="sum")
 
     if E_hat != None:
+
         if E_hat.dim() == 3:
             if verbose:
                 print("Not taking batched E_hat")    
             E_hat = E_hat[0]
+
+        c = E_hat.shape[1]
+        n_graph = c // 2
+        if c % 2 != 0: n_graph = n_graph + 1
             
         if E_gt != None:
             if E_gt.dim() == 3:
@@ -344,16 +360,23 @@ def plot_results(E_hat=None, A_hat=None, A_gt=None, E_gt=None, model_name=None, 
             axes = axes.flatten()
             for i in range(c):
                 ax = axes[i]
-                metric = sad(E_gt[:, i], E_hat[:, i])
+
+                sad_val = sad(E_gt[:, i], E_hat[:, i])
+
                 ax.plot(E_gt[:, i].detach().cpu(), 'r', linewidth=1.0, label='GT')
                 ax.plot(E_hat[:, i].detach().cpu(), 'k-', linewidth=1.0, label='predict')
-                ax.set_title(f"SAD = {format(metric, '.2f')}")
+                ax.set_title(f"SAD = {format(sad_val, '.2f')}")
+
                 if i == 0:
                     ax.legend() 
+
             for j in range(i + 1, len(axes)):
                 axes[j].axis('off')
+
             plt.subplots_adjust(hspace=0.5, wspace=0.4)
+
             total_sad = sad(E_gt, E_hat)
+
             if model_name != None:
                 plt.suptitle(f"{model_name} Endmember estimation, SAD = {format(total_sad, '.3f')}")
             else:
@@ -368,7 +391,12 @@ def plot_results(E_hat=None, A_hat=None, A_gt=None, E_gt=None, model_name=None, 
                 ax = plt.subplot(2, n_graph, i + 1)
                 plt.plot(E_hat[:, i].detach().cpu(), 'k-', linewidth=1.0, label='predict')
 
-    if A_gt != None:
+    if A_gt is not None:
+        if n_graph is None:
+            c = A_hat.shape[0]
+            n_graph = c // 2
+            if c % 2 != 0: n_graph = n_graph + 1
+
         if A_hat.dim() == 4:
             if verbose:
                 print("Not taking batched A_hat")
@@ -385,7 +413,14 @@ def plot_results(E_hat=None, A_hat=None, A_gt=None, E_gt=None, model_name=None, 
         fig, axes = plt.subplots(2, A_hat.shape[0], figsize=(10, 5))
         for i in range(A_hat.shape[0]):
             pred = axes[0, i].imshow(A_hat[i].detach().cpu())
-            axes[0, i].set_title(f"NMSE = {format(mse(A_gt[i], A_hat[i])/(torch.norm(A_gt[i])**2), '.2f')}")
+
+            if hypersigma:
+                mse_val = hypersigma_mse(A_gt[i].unsqueeze(0), A_hat[i].unsqueeze(0))
+            
+            else:
+                mse_val = mse(A_gt[i], A_hat[i])/(torch.norm(A_gt[i])**2)
+
+            axes[0, i].set_title(f"NMSE = {format(mse_val, '.2f')}")
             axes[0, i].axis('off')
 
             gt = axes[1, i].imshow(A_gt[i].detach().cpu())
@@ -398,7 +433,12 @@ def plot_results(E_hat=None, A_hat=None, A_gt=None, E_gt=None, model_name=None, 
         plt.subplots_adjust(left=0.1, right=0.9, top=0.5, bottom=0.1, wspace=0.1, hspace=0.5)
         fig.tight_layout(rect=[0.05, 0.25, 0.95, 0.9])
 
-        total_mse = mse(A_gt, A_hat)/(torch.norm(A_gt)**2)
+        if hypersigma:
+            total_mse = hypersigma_mse(A_gt, A_hat)
+
+        else:
+            total_mse = mse(A_gt, A_hat)/(torch.norm(A_gt)**2)
+
         if model_name != None:
             plt.suptitle(f"{model_name} abundance estimation, NMSE = {format(total_mse, '.3f')}")
         else:
@@ -526,19 +566,39 @@ def oneD_to_2d(Y):
         H = int(N**0.5)
         return Y.reshape(B, H, H)
 
-def sum_to_one(Y, batched=False):
+def sum_to_one(Y, is_endmember=False):
     """
-    Normalizes the input tensor so that each image sums to 1 in the case of abundances and hsi
-    And for endmembers, use batched=False, each endmember sums to 1
+    Normalizes a tensor of type Y, A, or E (batched or not) so that:
+    - For Y or A: each pixel (i,j) sums to 1 across the channel dimension.
+    - For E: each tensor[:, i] sums to 1 across the last dimension.
     """
-    
-    if batched:
-        Y = Y/torch.sum(Y, dim=1)
+    Y = Y.clone()
+
+    if is_endmember:
+        added_batch = False
+        if Y.dim() == 2:
+            Y = Y.unsqueeze(0)
+            added_batch = True
+
+        # Sum over last dimension for each B
+        sums = Y.sum(dim=2, keepdim=True)
+        Yn = Y / sums
     
     else:
-        Y = Y/torch.sum(Y, dim=0)
-    
-    return Y
+        added_batch = False
+        if Y.dim() == 3:
+            Y = Y.unsqueeze(0)
+            added_batch = True
+
+        # Sum over channels for each pixel
+        sums = Y.sum(dim=1, keepdim=True)
+        Yn = Y / sums
+        
+    if added_batch:
+        # Remove batch dimension if it was added
+        Yn = Yn.squeeze(0)
+
+    return Yn
 
 def normalize(Y, dim=0):
     """
@@ -562,55 +622,12 @@ class HSI_dataset(Dataset):
 
         data_path = path + dataset + ".mat"
         data = io.loadmat(data_path)
-        
-        if dataset == 'samson':
-            self.B, self.c = data['E'].shape[0], data['E'].shape[1]
-            if patch_size != None:
-                self.col = patch_size
-            else:
-                self.col = data["Y"].shape[1]
-        elif dataset == 'jasper':
-            self.B, self.c = data['E'].shape[0], data['E'].shape[1]
-            
-            if patch_size != None:
-                self.col = patch_size
-            else:
-                self.col = data["Y"].shape[1]
-        elif dataset == 'urban':
-            self.B, self.c = data['E'].shape[0], data['E'].shape[1]
-            
-            if patch_size != None:
-                self.col = patch_size
-            else:
-                self.col = data["Y"].shape[1]
-        elif dataset == 'apex':
-            self.B, self.c = data['E'].shape[0], data['E'].shape[1]
-            
-            if patch_size != None:
-                self.col = patch_size
-            else:
-                self.col = data["Y"].shape[1]
-        elif dataset == 'simulee_1':
-            self.B, self.c = data['E'].shape[0], data['E'].shape[1]
-            
-            if patch_size != None:
-                self.col = patch_size
-            else:
-                self.col = data["Y"].shape[1]
-        elif dataset == 'simulee_2':
-            self.B, self.c = data['E'].shape[0], data['E'].shape[1]
-            
-            if patch_size != None:
-                self.col = patch_size
-            else:
-                self.col = data["Y"].shape[1]
-        elif dataset == 'simulee_3':
-            self.B, self.c = data['E'].shape[0], data['E'].shape[1]
-            
-            if patch_size != None:
-                self.col = patch_size
-            else:
-                self.col = data["Y"].shape[1]
+
+        self.B, self.c = data['E'].shape[0], data['E'].shape[1]
+        if patch_size != None:
+            self.col = patch_size
+        else:
+            self.col = data["Y"].shape[1]
         
         self.Y = torch.tensor(data['Y'], dtype=dtype)
         self.A = torch.tensor(data['A'], dtype=dtype)
@@ -700,102 +717,7 @@ def create_dataloader(dataset, path="/home/ids/edabier/HSU/SS-HSU_benchmark/data
     else:
         train_loader = DataLoader(dataset, batch_size=batch_size)
         return train_loader, dataset.B, dataset.col
-
-class HyperspectralDataset(Dataset):
-    def __init__(self, dataset_name, data_path, patch_size):
-        # Load the .mat file
-        data = io.loadmat(data_path + dataset_name + ".mat")
-        Y = data["Y"] # (B, N)
-        E = data["E"] # (B, c)
-        A = data["A"] # (c, N)
-
-        # Mirror the image and abundance maps
-        self.Y = torch.tensor(Y, dtype=torch.float32)
-        self.A = torch.tensor(A, dtype=torch.float32)
-        self.E = torch.tensor(E, dtype=torch.float32)
-        self.B = self.Y.shape[0]
-        self.N = self.Y.shape[1]
-        self.c = self.A.shape[0]
-        self.patch_size = patch_size
-        self.patch_N = patch_size*patch_size
-
-        self.Y_2d = oneD_to_2d(self.Y) # (B, H, W)
-        self.A_2d = oneD_to_2d(self.A) # (c, H, W)
-        
-        self.mirror_Y = self.mirror_2d(self.Y_2d, patch_size)
-        self.mirror_A = self.mirror_2d(self.A_2d, patch_size)
-
-        # Generate all pixel positions
-        H, W = self.Y_2d.shape[1], self.Y_2d.shape[2]
-        max_x = self.mirror_Y.shape[1] - patch_size
-        max_y = self.mirror_Y.shape[2] - patch_size
-
-        # Generate all pixel positions within the valid range
-        rows = torch.arange(patch_size // 2, max_x)
-        cols = torch.arange(patch_size // 2, max_y)
-        self.all_positions = torch.cartesian_prod(rows, cols)
     
-    def mirror_2d(self, tensor_2d, patch_size):
-        # tensor_2d: (B, H, W) or (c, H, W)
-        padding = patch_size #// 2
-        H, W = tensor_2d.shape[1], tensor_2d.shape[2]
-
-        # Create a zero-padded tensor with extended padding
-        mirror = torch.zeros(
-            (tensor_2d.shape[0], H + 2 * padding, W + 2 * padding),
-            dtype=tensor_2d.dtype, device=tensor_2d.device
-        )
-
-        # Central region
-        mirror[:, padding:(padding + H), padding:(padding + W)] = tensor_2d
-
-        # Left mirroring
-        for i in range(padding):
-            mirror[:, padding:(H + padding), i] = tensor_2d[:, :, padding - i - 1]
-
-        # Right mirroring
-        for i in range(padding):
-            mirror[:, padding:(H + padding), W + padding + i] = tensor_2d[:, :, W - 1 - i]
-
-        # Top mirroring
-        for i in range(padding):
-            mirror[:, i, :] = mirror[:, padding * 2 - i - 1, :]
-
-        # Bottom mirroring
-        for i in range(padding):
-            mirror[:, H + padding + i, :] = mirror[:, H + padding - 1 - i, :]
-
-        return mirror
-    
-    def __len__(self):
-        return len(self.all_positions)
-    
-    def __getitem__(self, idx):
-        x, y = self.all_positions[idx]
-
-        # Extract Y patch: (B, patch_size, patch_size) -> (B, patch_N)
-        Y_patch = self.mirror_Y[:, x:(x + self.patch_size), y:(y + self.patch_size)]
-        Y_patch = Y_patch.reshape(self.B, self.patch_N)
-
-        # Extract A patch: (c, patch_size, patch_size) -> (c, patch_N)
-        A_patch = self.mirror_A[:, x:(x + self.patch_size), y:(y + self.patch_size)]
-        A_patch = A_patch.reshape(self.c, self.patch_N)
-
-        # E is the same for all patches: (B, c)
-        E_patch = self.E
-
-        return (
-            Y_patch,
-            E_patch,
-            A_patch
-        )
-
-def get_dataloader(dataset_name, patch_size, batch_size, n_workers=0, data_path="/home/ids/edabier/HSU/SS-HSU_benchmark/datasets/"):
-    dataset = HyperspectralDataset(dataset_name, data_path, patch_size)
-    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, 
-                                         num_workers=n_workers, pin_memory=True)
-    return dataloader
-        
 def save_model(model, optimizer, directory, name, epoch, is_permanent=False):
     """
     Overwrite the previous checkpoint save if not is_permanent, otherwise, saves a new version of the model
