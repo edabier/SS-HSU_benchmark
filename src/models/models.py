@@ -54,7 +54,7 @@ def init_decoder_weights(model, Y, c, kernel=None, is_unmixer=False, use_sivm=Fa
         if is_unmixer:
             model_dict["decoder.decoder.weight"][:,:,0,0] = init_em
         else:
-            model_dict["decoder.0.weight"][:,:,0,0] = init_em
+            model_dict["decoder.0.weight"] = init_em.unsqueeze(-1).unsqueeze(-1)
         
     model.load_state_dict(model_dict)
     return model
@@ -183,12 +183,12 @@ class DeepTrans(nn.Module, HSUModel):
 
     @staticmethod
     def loss(E_gt=None, E_hat=None, A_gt=None, A_hat=None, Y_gt=None, Y_hat=None, alpha=5e3, beta=5e-2):
-        mse = nn.MSELoss(reduction="mean")
+        mse = nn.MSELoss(reduction="sum")
         sad = utils.SADLoss()
 
         B = Y_gt.shape[1]
-        loss_re = alpha * mse(Y_hat, Y_gt)
-        loss_sad = sad(Y_hat, Y_gt)
+        loss_re = alpha * mse(Y_gt, Y_hat)/(torch.norm(Y_gt)**2)
+        loss_sad = sad(Y_gt, Y_hat)
         loss_sad = beta * torch.sum(loss_sad).float()
 
         total_loss = loss_re + loss_sad
@@ -205,7 +205,6 @@ class DeepTrans(nn.Module, HSUModel):
             x = x.unsqueeze(0) # Add a batch dimension for inference
 
         x = utils.oneD_to_2d(x)
-
         abu_est = self.encoder(x)
         cls_emb = self.vtrans(abu_est)
         cls_emb = cls_emb.view(1, self.c, -1)
@@ -215,9 +214,13 @@ class DeepTrans(nn.Module, HSUModel):
         
         e_est = self.decoder[0].weight.detach()[:,:,0,0]
         e_est = e_est.reshape(1, self.B, self.c)
+
+        print("X: ", x.shape)
+        print("Abu_est 3: ", abu_est.shape)
+        print("Cls_embed: ", cls_emb.shape)
         
-        abu_est = abu_est.reshape(1, self.c, self.im_size**2)
-        re_result = re_result.reshape(1, self.B, self.im_size**2)
+        # abu_est = abu_est.reshape(1, self.c, self.im_size**2)
+        # re_result = re_result.reshape(1, self.B, self.im_size**2)
         
         return e_est, abu_est, re_result
 
@@ -553,7 +556,7 @@ class NALMU(nn.Module, HSUModel):
         sad = utils.SADLoss()
         mse = nn.MSELoss(reduction='sum')
 
-        E_ordered, E_ordered_norm, A_ordered, indices = utils.order_endmembers(E_gt, E_hat, A_hat)
+        E_ordered, A_ordered, indices = utils.order_endmembers(E_gt, E_hat, A_hat)
         E_ordered = E_ordered[0]
         E_gt = E_gt[0]
         A_ordered = A_ordered[0]
@@ -658,7 +661,7 @@ class RALMU(nn.Module, HSUModel):
         sad = utils.SADLoss()
         mse = nn.MSELoss(reduction='sum')
 
-        E_ordered, E_ordered_norm, A_ordered, indices = utils.order_endmembers(E_gt, E_hat, A_hat)
+        E_ordered, A_ordered, indices = utils.order_endmembers(E_gt, E_hat, A_hat)
         E_ordered = E_ordered[0]
         E_gt = E_gt[0]
         A_ordered = A_ordered[0]

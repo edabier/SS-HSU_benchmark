@@ -139,7 +139,7 @@ def SiVM(Y, c, E_gt=None):
     E = Yp[:, I] 
         
     if E_gt is not None: 
-        E_ordered, E_ordered_norm, indices = utils.order_endmembers(E, E_gt) 
+        E_ordered, indices = utils.order_endmembers(E, E_gt) 
         return E_ordered 
     else: 
         return E
@@ -225,111 +225,7 @@ def VCA(Y, c, snr_input=0):
     E = Yc[:, indices] 
 
     return E
-
-def batched_VCA(Y, c, seed=None, snr_input=0, verbose=False):
-    """
-    Vertex Component Analysis algorithm by Jose M. P. Nascimento and Jose M. B. Dias
-    
-    Args:
-        Y: input HSI to extract endmembers from (shape (batch, B, h, w) or (batch, B, N))
-        c (int): the number of endmembders to extract
-        snr_input: the snr of the input image (default: 0)
-        verbose (bool, optional): whether to display informations or not (default: False)
-    """
-    
-    if Y.dim() == 4:  # (batch, B, H, W)
-        batch, B, H, W = Y.shape
-        N = H * W
-        Y = Y.reshape(batch, B, N)
-    elif Y.dim() == 3:  # (batch, B, N)
-        batch, B, N = Y.shape
-    else:
-        raise ValueError("Y must be 3D or 4D tensor")
-
-    if seed is not None:
-        generator = torch.Generator().manual_seed(seed)
-    else:
-        generator = torch.Generator()
-        
-    if snr_input == 0:
-        y_m = torch.mean(Y, dim=2, keepdim=True)
-        Y_o = Y - y_m  # data with zero-mean
-        Y_o_Y_oT = torch.matmul(Y_o, Y_o.transpose(1, 2)) / float(N)  # (batch, B, B)
-
-        # Compute SVD for all batches
-        U, S, Vh = LA.svd(Y_o_Y_oT)  # U: (batch, B, B), S: (batch, B), Vh: (batch, B, B)
-        Ud = U[:, :, :c]  # (batch, B, c)
-
-        # Project zero-mean data onto c-subspace for all batches
-        x_c = torch.matmul(Ud.transpose(1, 2), Y_o)  # (batch, c, N)
-
-        SNR = batched_estimate_snr(Y, y_m, x_c)
-
-        if verbose:
-            print(f"input SNR estimated = {SNR}[dB]")
-    else:
-        SNR = snr_input
-        
-        if verbose:
-            print(f"input SNR = {SNR}[dB]\n")
-
-    # Compute SNR threshold
-    SNR_th = 15 + 10 * torch.log10(torch.tensor(c))
-
-    if SNR < SNR_th:
-
-        d = c - 1
-        if snr_input == 0:  # it means that the projection is already computed
-            Ud = Ud[:, :d]
-        else:
-            y_m = torch.mean(Y, dim=2, keepdim=True)
-            Y_o = Y - y_m  # data with zero-mean
-
-            Ud = LA.svd(torch.matmul(Y_o, Y_o.transpose(1,2)) / float(N))[0][:, :, :d]  # computes the c-projection matrix
-            x_c = torch.matmul(Ud.transpose(1,2), Y_o)  # project thezeros mean data onto c-subspace
-
-        Yc = torch.matmul(Ud, x_c[:, :d, :]) + y_m  # again in dimension c
-
-        x = x_c[:, :d, :]  #  x_c =  Ud.T * Y_o is on a R-dim subspace
-        b = torch.max(torch.sum(x**2, dim=0)) ** 0.5
-        y = torch.vstack((x, b * torch.ones((1, N))))
-    else:
-
-        d = c
-        Ud = LA.svd(torch.matmul(Y, Y.transpose(1,2)) / float(N))[0][:, :, :c]  # computes the c-projection matrix
-
-        x_c = torch.matmul(Ud.transpose(1,2), Y)
-        Yc = torch.matmul(Ud, x_c)  # again in dimension b (note that x_c has no null mean)
-
-        x = torch.matmul(Ud.transpose(1,2), Y)
-        u = torch.mean(x, dim=2, keepdim=True)  # equivalent to  u = Ud.T * r_m
-        y = x / torch.matmul(u.transpose(1,2), x)
-        
-    
-    indices = torch.zeros((batch, c), dtype=torch.long)
-    A = torch.zeros((batch, c, c))
-    A[:, -1, 0] = 1
-
-    # Iterate c times (vectorized)
-    for i in range(c):
-        # Random projection for all batches
-        w = torch.rand((batch, c, 1), device=Y.device)
-        f = w - torch.matmul(A, torch.matmul(LA.pinv(A), w))  # (batch, c, 1)
-        f = f / LA.norm(f, dim=1, keepdim=True)  # (batch, c, 1)
-
-        v = torch.matmul(f.transpose(1, 2), y).squeeze(1)  # (batch, N)
-        
-        indices[:, i] = torch.argmax(torch.abs(v), dim=1)  # (batch,)
-        A[:, :, i] = y[torch.arange(batch), :, indices[:, i]]  # (batch, c)
-
-    # Gather E for all batches
-    E = Yc[torch.arange(batch), :, indices].transpose(1,2)  # (batch, B, c)
-
-    
-    if verbose:
-        print(f"Indices chosen to be the most pure: {indices}")
-    return E  # (batch, B, c)   
-    
+ 
 def FCLS(Y, E):
     """
     Performs fully constrained least squares to obtain the abundance matrices from Y and E

@@ -5,6 +5,7 @@ from torch.utils.data import Dataset, DataLoader, random_split
 import torch.nn.functional as F
 import numpy as np
 import matplotlib.pyplot as plt
+import matplotlib.patches as patches
 import math
 import scipy.io as io
 import os
@@ -127,74 +128,10 @@ def order_endmembers(E_gt, E_hat, A_hat=None):
     indices = indices.type(torch.int64)
 
     if A_hat != None:
-        return E_hat_corr[0], E_hat_corr_norm[0], A_hat_corr[0], indices
+        return E_hat_corr[0], A_hat_corr[0], indices
     else:
-        return E_hat_corr[0], E_hat_corr_norm[0], indices
+        return E_hat_corr[0], indices
  
-def order_abundances(A_gt, A_hat, E_hat=None):
-    if A_hat.dim() == 3:
-        A_hat = A_hat.unsqueeze(0)
-    if A_gt.dim() == 3:
-        A_gt = A_gt.unsqueeze(0)
-        
-    if E_hat != None:
-        if E_hat.dim() < 3:
-            E_hat = E_hat.unsqueeze(0)
-        E_hat_corr = torch.zeros_like(E_hat)
-    
-    B, c, H, W = A_hat.shape
-    A_hat = A_hat.reshape(B, c, -1).to(torch.float)
-    A_gt = A_gt.reshape(B, c, -1).to(torch.float)
-
-    A_hat_corr_gt = torch.zeros_like(A_hat)
-    A_hat_corr = torch.zeros_like(A_hat)
-    indices = torch.zeros((A_hat.size()[0],A_hat.size()[1]))
-
-    for batch in range(A_gt.size()[0]):
-        A_true = F.normalize(A_gt[batch], p=2.0, dim=1)  # (c, H*W)
-        A_pred = F.normalize(A_hat[batch], p=2.0, dim=1)  # (c, H*W)
-
-        cos_sim = A_true @ A_pred.T
-        costmat = torch.acos(torch.clamp(cos_sim, -1.0, 1.0))
-
-        dot_products = A_true @ A_pred.T
-        costmat = torch.acos(torch.clamp(dot_products, -1.0, 1.0))
-        m = Munkres()
-        Jperm = m.compute(costmat.tolist())
-        
-        APerm = torch.zeros(A_true.shape, dtype=torch.float)
-        APerm_gt = torch.zeros(A_true.shape, dtype=torch.float)
-        perm_indices = torch.zeros(A_true.shape[0])
-    
-        if E_hat != None:
-            EPerm = torch.zeros(E_hat[batch].shape)
-        
-        for c in range(A_true.shape[0]):
-            APerm[c, :] = A_hat[batch, Jperm[c][1]]
-            APerm_gt[c, :] = A_gt[batch, Jperm[c][1]]
-            perm_indices[c] = Jperm[c][1]
-
-            if E_hat != None:
-                EPerm[:, c] = E_hat[batch, :, Jperm[c][1]]
-
-        A_hat_corr_gt[batch] = APerm_gt
-        A_hat_corr[batch] = APerm
-        indices[batch] = perm_indices
-        if E_hat != None:
-            E_hat_corr[batch] = EPerm
-    indices = indices.type(torch.int64)
-
-    A_ordered = A_hat_corr[0]
-    A_ordered_gt = A_hat_corr_gt[0]
-    A_ordered = oneD_to_2d(A_ordered)
-    A_ordered_gt = oneD_to_2d(A_ordered_gt)
-
-    if A_hat != None:
-        E_ordered = E_hat_corr[0]
-        return A_ordered, A_ordered_gt, E_ordered, indices
-    else:
-        return A_ordered, A_ordered_gt,indices
-
 def compute_metrics_and_plot(e_hat, e_gt, a_hat, a_gt, name=None, use_wandb=False):
     """
     Computes the SAD of predicted E and MSE of predicted A
@@ -206,7 +143,7 @@ def compute_metrics_and_plot(e_hat, e_gt, a_hat, a_gt, name=None, use_wandb=Fals
     n = num_E // 2
     if num_E % 2 != 0: n = n + 1
 
-    E_ordered, _, a_hat, indices = order_endmembers(e_hat, e_gt, a_hat)
+    E_ordered, a_hat, indices = order_endmembers(e_hat, e_gt, a_hat)
     
     sads = []
     mses = []
@@ -324,7 +261,7 @@ def plot_losses(total_loss, loss_sad, loss_ab, loss_tv, loss_mse):
     plt.tight_layout()
     plt.show()
 
-def plot_results(E_hat=None, A_hat=None, A_gt=None, E_gt=None, model_name=None, normalize_E=False, normalize_A=False, return_results=False, verbose=False, hypersigma=False):
+def plot_results(E_hat=None, A_hat=None, A_gt=None, E_gt=None, model_name=None, normalize_E=False, normalize_A=False, return_results=False, plot_A=True, plot_E=True, hypersigma=False):
     """
     Displays the predicted endmembers and abundances
     """
@@ -333,11 +270,18 @@ def plot_results(E_hat=None, A_hat=None, A_gt=None, E_gt=None, model_name=None, 
     sad = SADLoss()
     mse = nn.MSELoss(reduction="sum")
 
+    bg_colors = ["mediumpurple", "cornflowerblue", "indianred", "peru"]
+    colors = ["thistle", "lavender", "mistyrose", "bisque"]
+
+    if E_gt != None:
+        if E_gt.dim() == 3:
+            E_gt = E_gt[0]
+
+        E_hat, A_hat, indices = order_endmembers(E_gt, E_hat, A_hat)
+
     if E_hat != None:
 
-        if E_hat.dim() == 3:
-            if verbose:
-                print("Not taking batched E_hat")    
+        if E_hat.dim() == 3:   
             E_hat = E_hat[0]
 
         c = E_hat.shape[1]
@@ -345,35 +289,30 @@ def plot_results(E_hat=None, A_hat=None, A_gt=None, E_gt=None, model_name=None, 
         if c % 2 != 0: n_graph = n_graph + 1
             
         if E_gt != None:
-            if E_gt.dim() == 3:
-                if verbose:
-                    print("Not taking batched E_gt")
-                E_gt = E_gt[0]
-
-            E_hat, _, A_hat, _ = order_endmembers(E_gt, E_hat, A_hat)
             
             if normalize_E:
                 E_hat = normalize(E_hat, dim=1)
                 E_gt = normalize(E_gt, dim=1)
 
-            fig, axes = plt.subplots(2, n_graph, figsize=(7,5))
-            axes = axes.flatten()
-            for i in range(c):
-                ax = axes[i]
+            if plot_E:
+                fig, axes = plt.subplots(2, n_graph, figsize=(7,5))
+                axes = axes.flatten()
+                for i in range(c):
+                    ax = axes[i]
 
-                sad_val = sad(E_gt[:, i], E_hat[:, i])
+                    sad_val = sad(E_gt[:, i], E_hat[:, i])
 
-                ax.plot(E_gt[:, i].detach().cpu(), 'r', linewidth=1.0, label='GT')
-                ax.plot(E_hat[:, i].detach().cpu(), 'k-', linewidth=1.0, label='predict')
-                ax.set_title(f"SAD = {format(sad_val, '.2f')}")
+                    ax.plot(E_gt[:, i].detach().cpu(), 'r', linewidth=1.0, label='GT')
+                    ax.plot(E_hat[:, i].detach().cpu(), 'k-', linewidth=1.0, label='predict')
+                    ax.set_title(f"SAD = {format(sad_val, '.2f')}", fontsize=10, pad=10, backgroundcolor=bg_colors[indices[0,i].item()], color=colors[indices[0,i].item()])
 
-                if i == 0:
-                    ax.legend() 
+                    if i == 0:
+                        ax.legend() 
 
-            for j in range(i + 1, len(axes)):
-                axes[j].axis('off')
+                for j in range(i + 1, len(axes)):
+                    axes[j].axis('off')
 
-            plt.subplots_adjust(hspace=0.5, wspace=0.4)
+                plt.subplots_adjust(hspace=0.5, wspace=0.4)
 
             total_sad = sad(E_gt, E_hat)
 
@@ -383,55 +322,54 @@ def plot_results(E_hat=None, A_hat=None, A_gt=None, E_gt=None, model_name=None, 
                 plt.suptitle(f"Endmember estimation, SAD = {format(total_sad, '.3f')}")
             
         else:
-            if model_name != None:
-                plt.suptitle(f'{model_name} Endmember estimation')
-            else:
-                plt.suptitle('Endmember estimation')
-            for i in range(c):
-                ax = plt.subplot(2, n_graph, i + 1)
-                plt.plot(E_hat[:, i].detach().cpu(), 'k-', linewidth=1.0, label='predict')
+            if plot_E:
+                if model_name != None:
+                    plt.suptitle(f'{model_name} Endmember estimation')
+                else:
+                    plt.suptitle('Endmember estimation')
+                for i in range(c):
+                    ax = plt.subplot(2, n_graph, i + 1)
+                    plt.plot(E_hat[:, i].detach().cpu(), 'k-', linewidth=1.0, label='predict')
 
     if A_gt is not None:
+
+        if A_hat.dim() == 4:
+            A_hat = A_hat[0]
+        
+        if A_gt.dim() == 4:
+                A_gt = A_gt[0]
+
         if n_graph is None:
             c = A_hat.shape[0]
             n_graph = c // 2
             if c % 2 != 0: n_graph = n_graph + 1
-
-        if A_hat.dim() == 4:
-            if verbose:
-                print("Not taking batched A_hat")
-            A_hat = A_hat[0]
-        
-        if A_gt.dim() == 4:
-                if verbose:
-                    print("Not taking batched A_gt")
-                A_gt = A_gt[0]
     
         if normalize_A:
             A_hat = normalize(A_hat)
 
-        fig, axes = plt.subplots(2, A_hat.shape[0], figsize=(10, 5))
-        for i in range(A_hat.shape[0]):
-            pred = axes[0, i].imshow(A_hat[i].detach().cpu())
+        if plot_A:
+            fig, axes = plt.subplots(2, c, figsize=(10, 5))
+            for i in range(c):
+                pred = axes[0, i].imshow(A_hat[i].detach().cpu())
 
-            if hypersigma:
-                mse_val = hypersigma_mse(A_gt[i].unsqueeze(0), A_hat[i].unsqueeze(0))
-            
-            else:
-                mse_val = mse(A_gt[i], A_hat[i])/(torch.norm(A_gt[i])**2)
+                if hypersigma:
+                    mse_val = hypersigma_mse(A_gt[i].unsqueeze(0), A_hat[i].unsqueeze(0))
+                
+                else:
+                    mse_val = mse(A_gt[i], A_hat[i])/(torch.norm(A_gt[i])**2)
 
-            axes[0, i].set_title(f"NMSE = {format(mse_val, '.2f')}")
-            axes[0, i].axis('off')
+                axes[0, i].set_title(f"NMSE = {format(mse_val, '.2f')}", fontsize=10, pad=10, backgroundcolor=bg_colors[indices[0,i].item()], color=colors[indices[0,i].item()])
+                axes[0, i].axis('off')
 
-            gt = axes[1, i].imshow(A_gt[i].detach().cpu())
-            axes[1, i].axis('off')
+                gt = axes[1, i].imshow(A_gt[i].detach().cpu())
+                axes[1, i].axis('off')
 
-        fig.colorbar(pred, ax=axes[0, -1], fraction=0.046, pad=0.04)
-        fig.colorbar(gt, ax=axes[1, -1], fraction=0.046, pad=0.04)
-        fig.text(0.05, 0.7, 'prediction', va='center', ha='center', fontsize=12, rotation='vertical')
-        fig.text(0.05, 0.4, 'gt', va='center', ha='center', fontsize=12, rotation='vertical')
-        plt.subplots_adjust(left=0.1, right=0.9, top=0.5, bottom=0.1, wspace=0.1, hspace=0.5)
-        fig.tight_layout(rect=[0.05, 0.25, 0.95, 0.9])
+            fig.colorbar(pred, ax=axes[0, -1], fraction=0.046, pad=0.04)
+            fig.colorbar(gt, ax=axes[1, -1], fraction=0.046, pad=0.04)
+            fig.text(0.05, 0.7, 'prediction', va='center', ha='center', fontsize=12, rotation='vertical')
+            fig.text(0.05, 0.4, 'gt', va='center', ha='center', fontsize=12, rotation='vertical')
+            plt.subplots_adjust(left=0.1, right=0.9, top=0.5, bottom=0.1, wspace=0.1, hspace=0.5)
+            fig.tight_layout(rect=[0.05, 0.25, 0.95, 0.9])
 
         if hypersigma:
             total_mse = hypersigma_mse(A_gt, A_hat)
@@ -443,11 +381,28 @@ def plot_results(E_hat=None, A_hat=None, A_gt=None, E_gt=None, model_name=None, 
             plt.suptitle(f"{model_name} abundance estimation, NMSE = {format(total_mse, '.3f')}")
         else:
             plt.suptitle(f"Abundance estimation, NMSE = {format(total_mse, '.3f')}")
+
+    elif plot_A:
+
+        if A_hat.dim() == 4:
+            A_hat = A_hat[0]
+
+        c = A_hat.shape[0]
+
+        fig, axes = plt.subplots(1, c, figsize=(10, 5))
+        for i in range(c):
+            pred = axes[i].imshow(A_hat[i].detach().cpu())
+            axes[i].axis('off')
+        
+        # Adaptative placement of the title as a function of the number of endmembers
+        offset_y = -(0.1/3) * c + 0.9
+        plt.suptitle("Abundance estimation", y=offset_y)
+        fig.colorbar(pred, ax=axes[-1], fraction=0.046, pad=0.04)
     
     if return_results:
         return total_sad, total_mse
 
-def compare_hsis(Y_gt, Y_hat, title=None):
+def compare_hsis(Y_gt, Y_hat, title=None, gt_name=None, hat_name=None, n=4):
     """
     Displays the first 4 channels of both reconstructed and groundtruth HSIs
     Must be of shape (batch, B, H, W) or (B, H, W)
@@ -457,12 +412,23 @@ def compare_hsis(Y_gt, Y_hat, title=None):
     if Y_hat.dim() > 3:
         Y_hat = Y_hat.squeeze(0)
 
-    fig, axes = plt.subplots(2, 4, figsize=(10, 5))
+    fig, axes = plt.subplots(2, n, figsize=(10, 5))
     B, H, W = Y_gt.shape
-    axes[0, 0].set_title(f"Prediction", fontsize=12)
-    axes[1, 0].set_title(f"GT", fontsize=12)
-    for i in range(4):
-        i_th = int((i/4)*B)
+
+    if gt_name is not None:
+        axes[1, 0].set_title(f"{gt_name}", fontsize=12)
+
+    else:
+        axes[1, 0].set_title("GT", fontsize=12)
+
+    if hat_name is not None:
+        axes[0, 0].set_title(f"{hat_name}", fontsize=12)
+
+    else:
+        axes[0, 0].set_title("Prediction", fontsize=12)
+
+    for i in range(n):
+        i_th = int((i/n)*B)
         pred = axes[0, i].imshow(Y_hat[i_th].detach().cpu())
         axes[0, i].axis('off')
 
@@ -613,7 +579,7 @@ def normalize(Y, dim=0):
     return Y_normalized
 
 class HSI_dataset(Dataset):    
-    def __init__(self, dataset, path="/home/ids/edabier/HSU/SS-HSU_benchmark/datasets/", patch_size=None, dtype=None):
+    def __init__(self, dataset, path="/home/ids/edabier/HSU/SS-HSU_benchmark/datasets/", patch_size=None, dtype=None, deeptrans=False):
         
         self.dataset_name = dataset
         
@@ -622,8 +588,8 @@ class HSI_dataset(Dataset):
 
         data_path = path + dataset + ".mat"
         data = io.loadmat(data_path)
-
-        self.B, self.c = data['E'].shape[0], data['E'].shape[1]
+        
+        self.B, self.c = (data['M'].shape[0], data['M'].shape[1]) if deeptrans else (data['E'].shape[0], data['E'].shape[1])
         if patch_size != None:
             self.col = patch_size
         else:
@@ -631,7 +597,7 @@ class HSI_dataset(Dataset):
         
         self.Y = torch.tensor(data['Y'], dtype=dtype)
         self.A = torch.tensor(data['A'], dtype=dtype)
-        self.E = torch.tensor(data['E'], dtype=dtype)
+        self.E = torch.tensor(data['M'], dtype=dtype) if deeptrans else torch.tensor(data['E'], dtype=dtype)
         
         self.B, self.N = self.Y.shape
         self.n = int(self.N ** 0.5)
@@ -692,7 +658,7 @@ class HSI_dataset(Dataset):
         # Return the patch and the full E
         return Y_patch, self.E, A_patch
    
-def create_dataloader(dataset, path="/home/ids/edabier/HSU/SS-HSU_benchmark/datasets/", dev="cpu", train_split=None, patch_size=None, batch_size=1, dtype=torch.float32):
+def create_dataloader(dataset, path="/home/ids/edabier/HSU", dev="cpu", train_split=None, patch_size=None, batch_size=1, dtype=torch.float32, deeptrans=False):
     """
     Creates dataloader(s) for a given dataset
     
@@ -702,10 +668,12 @@ def create_dataloader(dataset, path="/home/ids/edabier/HSU/SS-HSU_benchmark/data
         train_split (float, optional): how much of the dataset to use for the training and testing sets
         patch_size (int): whether or not to patch the input HSI
     """
+    path += "/SS-HSU_benchmark/datasets/"
+
     if patch_size is None:
-        dataset = HSI_dataset(dataset, path, dtype=dtype)
+        dataset = HSI_dataset(dataset, path, dtype=dtype, deeptrans=deeptrans)
     else:
-        dataset = HSI_dataset(dataset, path, patch_size, dtype=dtype)
+        dataset = HSI_dataset(dataset, path, patch_size, dtype=dtype, deeptrans=deeptrans)
         
     if train_split != None:
         generator = torch.Generator(dev)

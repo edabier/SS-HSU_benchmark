@@ -10,10 +10,12 @@ import argparse
 import os
 from timm.models.vision_transformer import Block
 
+import src.models.transformer as transformer
 import src.utils.utils as utils
 
-global_path = "/home/ids/edabier/HSU"
+# global_path = "/home/ids/edabier/HSU"
 # global_path = "/Users/edabier/Documents/Thèse/Thèse_Télécom"
+global_path = "/home/edabier/Documents/Thèse/benchmark"
 sys.path.append(global_path)
 
 sys.path.append(f"{global_path}/spectral_earth")
@@ -831,6 +833,137 @@ class Unmixing_from_features(nn.Module):
         A_hat = self.get_abundances(features)
         Y_hat = self.decoder(A_hat)
         E_hat = self.decoder.get_endmembers()
+
+        return E_hat, A_hat, Y_hat
+
+class DeepTrans_from_features(nn.Module):
+    def __init__(self, D, B, c, H=224, alpha=None, n_features=1):
+        """
+        Args:
+            D (int): The embed_dim
+            B (int): The number of spectral bands in the hsi
+            c (int): The number of endmembers to extract
+            H (int): The size of the input hsi
+            alpha (int): The size of the features
+            n_features (int): The size of the list of features in the case of several extracted features
+
+        """
+        super(DeepTrans_from_features, self).__init__()
+        self.D = D
+        self.alpha = alpha
+        self.B = B
+        self.c = c
+        self.H = H
+        self.n_features = n_features
+        self.im_size = (H//5)*5
+
+        self.upsample = nn.Sequential(
+            nn.Linear(self.n_features*(self.alpha**2), self.im_size**2)
+        )
+
+        self.vtrans = transformer.ViT(image_size=self.im_size, patch_size=5, embed_dim=(200*c), depth=2,
+                                    heads=8, mlp_dim=12, pool='cls')
+        
+        self.upscale = nn.Sequential(
+            nn.Linear(200, self.im_size ** 2),
+        )
+        
+        self.smooth = nn.Sequential(
+            nn.Conv2d(c, c, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1)),
+            nn.Softmax(dim=1),
+        )
+
+        self.decoder = nn.Sequential(
+            nn.Conv2d(c, B, kernel_size=(1, 1), stride=(1, 1), bias=False),
+            nn.ReLU(),
+        )
+
+    @staticmethod
+    def weights_init(m):
+        if type(m) == nn.Conv2d:
+            nn.init.kaiming_normal_(m.weight.data)
+
+    @staticmethod
+    def loss(Y_gt, Y_hat, A_hat, E_hat, W_sad=1, W_ab=0.35, W_tv_e=0.1, W_tv_a=0, W_mse=0, W_e=0, hypersigma=False):
+        sad = utils.SADLoss()
+        tv = utils.TVLoss(reduction="mean")
+        mse = nn.MSELoss(reduction='sum')
+        
+        loss_sad = W_sad * sad(Y_gt, Y_hat)
+        loss_ab = W_ab * torch.sqrt(A_hat).mean()
+
+        if hypersigma:
+            loss_mse = W_mse * utils.hypersigma_mse(Y_gt, Y_hat)
+        else:
+            loss_mse = W_mse * mse(Y_gt, Y_hat)/(torch.norm(Y_gt)**2)
+        
+        # Enforce Sum of all wavelength to be 1 for each endmember:
+        # Minimize 1 - sum(E[:,i]) for i in c
+        loss_norm_e = W_e * torch.norm(torch.ones(E_hat.shape[1]) - torch.sum(E_hat, dim=0))
+
+        # TV on endmembers (sum of difference between consecutive endmembers)
+        loss_tv_e = W_tv_e * (torch.abs(E_hat[:, 1:] - E_hat[:, :-1]).sum())
+
+        # TV on abundances (sum of difference between consecutive horizontal pixels + vertical pixels)
+        # loss_tv_a = W_tv_a * torch.abs(A_hat[:, :, :, 1:] - A_hat[:, :, :, :-1]).sum() + torch.abs(A_hat[:, :, 1:, :] - A_hat[:, :, :-1, :]).sum()
+        loss_tv_a = W_tv_a * tv(A_hat)
+
+        loss = loss_sad + loss_ab + loss_tv_e + loss_tv_a + loss_mse + loss_norm_e
+
+        return loss, loss_sad, loss_ab, loss_tv_e, loss_tv_a, loss_mse, loss_norm_e
+
+    def freeze_decoder(self):
+        """
+        Normalizes the weights of the decoder and freezes it
+        """
+        state_dict = self.decoder.state_dict()
+        E_hat = self.decoder.get_endmembers()
+        E_hat = utils.normalize(E_hat)
+        state_dict["decoder.weight"][:, :, 0, 0] = E_hat
+        self.decoder.load_state_dict(state_dict)
+
+        for param in self.decoder.parameters():
+            param.requires_grad = False
+
+    @staticmethod
+    def supervised_loss(Y_gt, Y_hat, A_gt, A_hat, E_gt, E_hat):
+        sad = utils.SADLoss()
+        mse = nn.MSELoss(reduction='sum')
+
+        loss_re = sad(Y_gt, Y_hat)
+        loss_mse = mse(A_gt, A_hat)/(torch.norm(A_gt)**2)
+        loss_sad = sad(E_gt, E_hat)
+        loss = loss_re + loss_mse + loss_sad
+
+        return loss, loss_re, loss_sad, loss_mse
+    
+    def get_abundances(self, features):
+
+        features = features.reshape(self.D, self.n_features*self.alpha*self.alpha)
+        features_up = self.upsample(features)
+        features_up = features_up.view(
+            1, self.D, self.im_size, self.im_size
+        )
+        features_up = (features_up - features_up.mean())/ (1e-8 + features_up.std())
+
+        cls_emb = self.vtrans(features_up)
+        cls_emb = cls_emb.view(1, self.c, -1)
+        abu_est = self.upscale(cls_emb).view(1, self.c, self.im_size, self.im_size)
+        abu_est = self.smooth(abu_est)
+        
+        return abu_est
+    
+    def get_endmembers(self):
+        
+        e_est = self.decoder[0].weight.detach()[:,:,0,0]
+        e_est = e_est.reshape(1, self.B, self.c)
+
+        return e_est
+    
+    def forward(self, features):
+        A_hat = self.get_abundances(features)
+        Y_hat = self.decoder(A_hat)
+        E_hat = self.get_endmembers()
 
         return E_hat, A_hat, Y_hat
 
