@@ -12,6 +12,7 @@ from timm.models.vision_transformer import Block
 
 import src.models.transformer as transformer
 import src.utils.utils as utils
+import src.utils.losses as losses
 
 # global_path = "/home/ids/edabier/HSU"
 # global_path = "/Users/edabier/Documents/Thèse/Thèse_Télécom"
@@ -328,6 +329,13 @@ def create_fm(fm_name, Y, c=None, n_features=1, patch_size=64, use_cls=False, ex
     device = Y.device
 
     if fm_name == "DOFA":
+        if H < 224:
+            Y = F.interpolate(Y, size=(224,224))
+            new_H = 224
+        else:
+            new_H = 224
+        Y = Y[:,:,:new_H, :new_H]
+
         check_point = torch.load(f'{path}/DOFA/checkpoints/DOFA_ViT_base_e100.pth', map_location=device)
         if n_features == 1:
             out_indices = [11]
@@ -342,6 +350,12 @@ def create_fm(fm_name, Y, c=None, n_features=1, patch_size=64, use_cls=False, ex
         fm.load_state_dict(check_point, strict=False)
 
     elif fm_name == "HyperFree":
+        n_patches = H//patch_size
+        if n_patches%2 != 0:
+            H = (n_patches-1)*patch_size + patch_size-1
+        new_H = H
+        Y = Y[:, :, :new_H, :new_H]
+
         checkpoint = torch.load(f"{path}/HyperFree/data/HyperFree-b.pth", map_location=device)
         fm = image_encoder.ImageEncoderViT(depth=12, embed_dim=768,
                 img_size=H, mlp_ratio=4, norm_layer=partial(torch.nn.LayerNorm, eps=1e-6),
@@ -351,6 +365,8 @@ def create_fm(fm_name, Y, c=None, n_features=1, patch_size=64, use_cls=False, ex
         fm.load_state_dict(checkpoint, strict=False)
 
     elif fm_name == "HyperSIGMA":
+        new_H = H
+
         embed_dim, seg_patches, NUM_TOKENS, scale = 768, 2, 64, 1
         fm = HyperSIGMA_Unmix(patch_size=patch_size, channels=B, seg_patches=seg_patches, NUM_TOKENS=NUM_TOKENS, embed_dim=embed_dim, num_em=c, scale=scale)
 
@@ -386,6 +402,13 @@ def create_fm(fm_name, Y, c=None, n_features=1, patch_size=64, use_cls=False, ex
         fm.load_state_dict(model_params)
 
     elif fm_name == "SpecViT":
+        if H < 128:
+            Y = F.interpolate(Y, size=(128,128))
+            new_H = 128
+        else:
+            new_H = 128
+        Y = Y[:,:,:new_H, :new_H]
+
         fm = spec_vit.SpecViTBase()
         checkpoint = torch.load(f"{path}/spectral_earth/data/data/spec_ViTb_mae.pth", map_location=dev)
         fm.load_state_dict(checkpoint, strict=False)
@@ -404,7 +427,7 @@ def create_fm(fm_name, Y, c=None, n_features=1, patch_size=64, use_cls=False, ex
         print("Fm name is not known, use DOFA, HyperFree, HyperSIGMA, SpecViT, SpecRnDino or SpecRnMoco")
         return
     
-    return fm
+    return fm, Y, new_H
 
 def extract_f(fm_name, fm, Y, A, new_H, wavelengths, use_cls=False):
     if fm_name == "DOFA":
@@ -571,7 +594,7 @@ def features_comparison(model_name, Y_gt, Y_hat, wavelengths=None, c=None):
     and those extraced from Y_hat by some RSFM
     """
     mse = nn.MSELoss()
-    sad = utils.SADLoss()
+    sad = losses.SADLoss()
 
     if model_name == "DOFA":
         features = get_dofa_features(Y_gt, wavelengths)
@@ -746,15 +769,15 @@ class Unmixing_from_features(nn.Module):
 
     @staticmethod
     def loss(Y_gt, Y_hat, A_hat, E_hat, W_sad=1, W_ab=0.35, W_tv_e=0.1, W_tv_a=0, W_mse=0, W_e=0, hypersigma=False):
-        sad = utils.SADLoss()
-        tv = utils.TVLoss(reduction="mean")
+        sad = losses.SADLoss()
+        tv = losses.TVLoss(reduction="mean")
         mse = nn.MSELoss(reduction='sum')
         
         loss_sad = W_sad * sad(Y_gt, Y_hat)
         loss_ab = W_ab * torch.sqrt(A_hat).mean()
 
         if hypersigma:
-            loss_mse = W_mse * utils.hypersigma_mse(Y_gt, Y_hat)
+            loss_mse = W_mse * losses.hypersigma_mse(Y_gt, Y_hat)
         else:
             loss_mse = W_mse * mse(Y_gt, Y_hat)/(torch.norm(Y_gt)**2)
         
@@ -766,7 +789,6 @@ class Unmixing_from_features(nn.Module):
         loss_tv_e = W_tv_e * (torch.abs(E_hat[:, 1:] - E_hat[:, :-1]).sum())
 
         # TV on abundances (sum of difference between consecutive horizontal pixels + vertical pixels)
-        # loss_tv_a = W_tv_a * torch.abs(A_hat[:, :, :, 1:] - A_hat[:, :, :, :-1]).sum() + torch.abs(A_hat[:, :, 1:, :] - A_hat[:, :, :-1, :]).sum()
         loss_tv_a = W_tv_a * tv(A_hat)
 
         loss = loss_sad + loss_ab + loss_tv_e + loss_tv_a + loss_mse + loss_norm_e
@@ -779,7 +801,7 @@ class Unmixing_from_features(nn.Module):
         """
         state_dict = self.decoder.state_dict()
         E_hat = self.decoder.get_endmembers()
-        E_hat = utils.normalize(E_hat)
+        E_hat = utils.normalize(E_hat, is_endmember=True)
         state_dict["decoder.weight"][:, :, 0, 0] = E_hat
         self.decoder.load_state_dict(state_dict)
 
@@ -788,7 +810,7 @@ class Unmixing_from_features(nn.Module):
 
     @staticmethod
     def supervised_loss(Y_gt, Y_hat, A_gt, A_hat, E_gt, E_hat):
-        sad = utils.SADLoss()
+        sad = losses.SADLoss()
         mse = nn.MSELoss(reduction='sum')
 
         loss_re = sad(Y_gt, Y_hat)
@@ -810,7 +832,6 @@ class Unmixing_from_features(nn.Module):
             if features.dim() == 2:
                 features = features.reshape(1, 4*self.D, self.alpha, self.alpha)
             features_up = F.interpolate(features, size=(self.H, self.H), mode='bilinear', align_corners=True)
-            # noise = torch.rand_like(features_up)
             features_up = (features_up - features_up.mean())/ (1e-8 + features_up.std())
             A_hat = self.abundance_estimator(features_up)
 
@@ -885,15 +906,15 @@ class DeepTrans_from_features(nn.Module):
 
     @staticmethod
     def loss(Y_gt, Y_hat, A_hat, E_hat, W_sad=1, W_ab=0.35, W_tv_e=0.1, W_tv_a=0, W_mse=0, W_e=0, hypersigma=False):
-        sad = utils.SADLoss()
-        tv = utils.TVLoss(reduction="mean")
+        sad = losses.SADLoss()
+        tv = losses.TVLoss(reduction="mean")
         mse = nn.MSELoss(reduction='sum')
         
         loss_sad = W_sad * sad(Y_gt, Y_hat)
         loss_ab = W_ab * torch.sqrt(A_hat).mean()
 
         if hypersigma:
-            loss_mse = W_mse * utils.hypersigma_mse(Y_gt, Y_hat)
+            loss_mse = W_mse * losses.hypersigma_mse(Y_gt, Y_hat)
         else:
             loss_mse = W_mse * mse(Y_gt, Y_hat)/(torch.norm(Y_gt)**2)
         
@@ -918,7 +939,7 @@ class DeepTrans_from_features(nn.Module):
         """
         state_dict = self.decoder.state_dict()
         E_hat = self.decoder.get_endmembers()
-        E_hat = utils.normalize(E_hat)
+        E_hat = utils.normalize(E_hat, is_endmember=True)
         state_dict["decoder.weight"][:, :, 0, 0] = E_hat
         self.decoder.load_state_dict(state_dict)
 
@@ -927,7 +948,7 @@ class DeepTrans_from_features(nn.Module):
 
     @staticmethod
     def supervised_loss(Y_gt, Y_hat, A_gt, A_hat, E_gt, E_hat):
-        sad = utils.SADLoss()
+        sad = losses.SADLoss()
         mse = nn.MSELoss(reduction='sum')
 
         loss_re = sad(Y_gt, Y_hat)
@@ -966,9 +987,9 @@ class DeepTrans_from_features(nn.Module):
         E_hat = self.get_endmembers()
 
         return E_hat, A_hat, Y_hat
-
+    
 class CNNAEU_with_decoder(nn.Module):
-    def __init__(self, B, c, decoder=None, E_init=None):
+    def __init__(self, B, c, decoder=None, E_init=None, freeze_E=True):
         super().__init__()
 
         self.B = B
@@ -989,15 +1010,16 @@ class CNNAEU_with_decoder(nn.Module):
             self.decoder = Decoder(self.c, self.B)
             if E_init != None:
                 state_dict = self.decoder.state_dict()
-                state_dict["decoder.weight"][:,:,0,0] = E_init
+                state_dict["decoder.weight"] = E_init.unsqueeze(-1).unsqueeze(-1)
                 self.decoder.load_state_dict(state_dict)
 
-        for param in self.decoder.parameters():
-            param.requires_grad = False
+        if freeze_E:
+            for param in self.decoder.parameters():
+                param.requires_grad = False
     
     @staticmethod
     def loss(E_gt, E_hat, A_gt, A_hat, Y_gt, Y_hat):
-        sad = utils.SADLoss()
+        sad = losses.SADLoss()
         return sad(Y_gt, Y_hat)
     
     def forward(self, x):

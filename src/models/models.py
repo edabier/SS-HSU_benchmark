@@ -9,6 +9,7 @@ import matplotlib.pyplot as plt
 import src.models.transformer as transformer
 import src.utils.extractor as extractor
 import src.utils.utils as utils
+import src.utils.losses as losses
 
 class HSUModel():
     def __init__(self):
@@ -36,7 +37,7 @@ class weightConstraint(object):
         if hasattr(module, 'weight'):
             module.weight.clamp_(min=0)
 
-def init_decoder_weights(model, Y, c, kernel=None, is_unmixer=False, use_sivm=False):
+def init_decoder_weights(model, Y, c, kernel=None, is_unmixer=False, use_sivm=True):
     """
     Initializes the model's decoder weights with VCA extracted endmembers
     input Y must be of shape (B, N) or (B, H, W) -> no batch
@@ -52,6 +53,7 @@ def init_decoder_weights(model, Y, c, kernel=None, is_unmixer=False, use_sivm=Fa
         model_dict['decoder.weight'][:, :, kernel//2, kernel//2] = init_em
     else:
         if is_unmixer:
+            # init_em = utils.normalize(init_em, is_endmember=True)
             model_dict["decoder.decoder.weight"][:,:,0,0] = init_em
         else:
             model_dict["decoder.0.weight"] = init_em.unsqueeze(-1).unsqueeze(-1)
@@ -71,23 +73,21 @@ class CNNAEU(nn.Module, HSUModel):
         B (int): the number of spectral bands
         c (int): the number of endmembers
     """
-    def __init__(self, B, c, scale=3.0, dev="cpu"):
+    def __init__(self, B, c, scale=3.0, E_init=None):
         super().__init__()
         self.B = B
         self.c = c
-
-        self.device = dev
 
         self.lrelu_params = {
             "negative_slope": 0.02,
             "inplace": True,
         }
         
-        self.init_architecture()
+        self.init_architecture(E_init=E_init)
 
         self.scale = scale
 
-    def init_architecture(self, seed=None):
+    def init_architecture(self, seed=None, E_init=None):
         
         if seed is not None:
             torch.manual_seed(seed)
@@ -104,10 +104,15 @@ class CNNAEU(nn.Module, HSUModel):
         )
         
         self.decoder = nn.Conv2d(self.c, self.B, kernel_size=11, padding=5, padding_mode="reflect", bias=False)
+        
+        if E_init != None:
+            state_dict = self.decoder.state_dict()
+            state_dict["weight"] = E_init.unsqueeze(-1).unsqueeze(-1).expand(self.B, self.c, 11, 11)
+            self.decoder.load_state_dict(state_dict)
 
     @staticmethod
     def loss(E_gt, E_hat, A_gt, A_hat, Y_gt, Y_hat):
-        sad = utils.SADLoss()
+        sad = losses.SADLoss()
         return sad(Y_gt, Y_hat)
     
     def forward(self, x):
@@ -184,7 +189,7 @@ class DeepTrans(nn.Module, HSUModel):
     @staticmethod
     def loss(E_gt=None, E_hat=None, A_gt=None, A_hat=None, Y_gt=None, Y_hat=None, alpha=5e3, beta=5e-2):
         mse = nn.MSELoss(reduction="sum")
-        sad = utils.SADLoss()
+        sad = losses.SADLoss()
 
         B = Y_gt.shape[1]
         loss_re = alpha * mse(Y_gt, Y_hat)/(torch.norm(Y_gt)**2)
@@ -553,7 +558,7 @@ class NALMU(nn.Module, HSUModel):
         if E_hat.dim() != 3:
             E_hat = E_hat.unsqueeze(0)
 
-        sad = utils.SADLoss()
+        sad = losses.SADLoss()
         mse = nn.MSELoss(reduction='sum')
 
         E_ordered, A_ordered, indices = utils.order_endmembers(E_gt, E_hat, A_hat)
@@ -658,7 +663,7 @@ class RALMU(nn.Module, HSUModel):
         if E_hat.dim() != 3:
             E_hat = E_hat.unsqueeze(0)
 
-        sad = utils.SADLoss()
+        sad = losses.SADLoss()
         mse = nn.MSELoss(reduction='sum')
 
         E_ordered, A_ordered, indices = utils.order_endmembers(E_gt, E_hat, A_hat)

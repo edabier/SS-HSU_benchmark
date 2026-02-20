@@ -9,6 +9,7 @@ import wandb
 import src.training.data_augmentation as data_aug
 import src.utils.extractor as extractor
 import src.utils.utils as utils
+import src.utils.losses as losses
 import src.models.models as models
 
 directory = "/home/ids/edabier/HSU/SS-HSU_benchmark/models"
@@ -37,7 +38,7 @@ class SupervisedTrainer():
             self.scheduler = scheduler
     
     def criterion(self, E_gt, E_hat, A_gt, A_hat):
-        sad = utils.SADLoss()
+        sad = losses.SADLoss()
         mse = nn.MSELoss(reduction='sum')
         
         if E_hat.dim() != 3:
@@ -508,7 +509,7 @@ class TwoStagesNet(SelfSupervisedTrainer):
         - SAD(r+n, y_gt)
         """
         mse = nn.MSELoss()
-        # sad = utils.SADLoss()
+        # sad = losses.SADLoss()
         
         loss_forward = mse(y_gt, y_hat)
         loss_denoiser = mse(y_gt, (r+n))
@@ -829,7 +830,7 @@ class GeneratedDataset(SelfSupervisedTrainer):
         """
         
         mse = nn.MSELoss()
-        sad = utils.SADLoss()
+        sad = losses.SADLoss()
         
         loss_e = sad(e_gt, e_hat)
         loss_a = mse(a_gt, a_hat)**0.5
@@ -945,7 +946,7 @@ class ContrastiveLearning(SelfSupervisedTrainer):
             temp (float): the temperature parameter (default: 0.5)
         """
         loss = 0
-        sad = utils.SADLoss()
+        sad = losses.SADLoss()
         
         # for a_pos in a_positive:
         #     num = torch.exp(self.cosine_sim(a, a_pos))/ temp
