@@ -40,8 +40,8 @@ def compute_metrics_and_plot(E_hat=None, A_hat=None, A_gt=None, E_gt=None, model
     sad = losses.SADLoss()
     mse = nn.MSELoss(reduction="sum")
 
-    bg_colors = ["mediumpurple", "cornflowerblue", "indianred", "peru"]
-    colors = ["thistle", "lavender", "mistyrose", "bisque"]
+    bg_colors = ["mediumpurple", "cornflowerblue", "indianred", "goldenrod", "mediumseagreen", "lightpink"]
+    colors = ["thistle", "lavender", "mistyrose", "lightyellow", "lightblue", "lavenderblush"]
 
     if E_gt != None:
         if E_gt.dim() == 3:
@@ -64,6 +64,8 @@ def compute_metrics_and_plot(E_hat=None, A_hat=None, A_gt=None, E_gt=None, model
                 E_hat = utils.normalize(E_hat, is_endmember=True)
                 E_gt = utils.normalize(E_gt, is_endmember=True)
 
+            total_sad = sad(E_gt, E_hat)
+
             if plot_E:
                 fig, axes = plt.subplots(2, n_graph, figsize=(7,5))
                 axes = axes.flatten()
@@ -84,22 +86,23 @@ def compute_metrics_and_plot(E_hat=None, A_hat=None, A_gt=None, E_gt=None, model
 
                 plt.subplots_adjust(hspace=0.5, wspace=0.4)
 
-            total_sad = sad(E_gt, E_hat)
-
-            if model_name != None:
-                plt.suptitle(f"{model_name} Endmember estimation, SAD = {format(total_sad, '.3f')}")
-            else:
-                plt.suptitle(f"Endmember estimation, SAD = {format(total_sad, '.3f')}")
+                if model_name != None:
+                    E_title = f"{model_name} Endmember estimation, SAD = {format(total_sad, '.3f')}"
+                else:
+                    E_title = f"Endmember estimation, SAD = {format(total_sad, '.3f')}"
+                    
+                plt.suptitle(E_title)
             
         else:
             if plot_E:
                 if model_name != None:
-                    plt.suptitle(f'{model_name} Endmember estimation')
+                    E_title = f'{model_name} Endmember estimation'
                 else:
-                    plt.suptitle('Endmember estimation')
+                    E_title = 'Endmember estimation'
                 for i in range(c):
                     ax = plt.subplot(2, n_graph, i + 1)
                     plt.plot(E_hat[:, i].detach().cpu(), 'k-', linewidth=1.0, label='predict')
+                plt.suptitle(E_title)
 
     if A_gt is not None:
 
@@ -119,6 +122,12 @@ def compute_metrics_and_plot(E_hat=None, A_hat=None, A_gt=None, E_gt=None, model
         if normalize_A:
             A_hat = utils.normalize(A_hat)
             A_gt = utils.normalize(A_gt)
+        
+        if hypersigma:
+            total_mse = losses.hypersigma_mse(A_gt, A_hat)
+
+        else:
+            total_mse = mse(A_gt, A_hat)/(torch.norm(A_gt)**2)
 
         if plot_A:
             fig, axes = plt.subplots(2, c, figsize=(10, 5))
@@ -144,16 +153,11 @@ def compute_metrics_and_plot(E_hat=None, A_hat=None, A_gt=None, E_gt=None, model
             plt.subplots_adjust(left=0.1, right=0.9, top=0.5, bottom=0.1, wspace=0.1, hspace=0.5)
             fig.tight_layout(rect=[0.05, 0.25, 0.95, 0.9])
 
-        if hypersigma:
-            total_mse = losses.hypersigma_mse(A_gt, A_hat)
-
-        else:
-            total_mse = mse(A_gt, A_hat)/(torch.norm(A_gt)**2)
-
-        if model_name != None:
-            plt.suptitle(f"{model_name} abundance estimation, NMSE = {format(total_mse, '.3f')}")
-        else:
-            plt.suptitle(f"Abundance estimation, NMSE = {format(total_mse, '.3f')}")
+            if model_name != None:
+                A_title = f"{model_name} abundance estimation, NMSE = {format(total_mse, '.3f')}"
+            else:
+                A_title = f"Abundance estimation, NMSE = {format(total_mse, '.3f')}"
+            plt.suptitle(A_title)
 
     elif plot_A:
 

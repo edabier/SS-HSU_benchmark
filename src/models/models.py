@@ -37,7 +37,7 @@ class weightConstraint(object):
         if hasattr(module, 'weight'):
             module.weight.clamp_(min=0)
 
-def init_decoder_weights(model, Y, c, kernel=None, is_unmixer=False, use_sivm=True):
+def init_decoder_weights(model, Y, c, kernel=None, is_unmixer=False, use_sivm=True, is_cnnaeu=False, normalize=False):
     """
     Initializes the model's decoder weights with VCA extracted endmembers
     input Y must be of shape (B, N) or (B, H, W) -> no batch
@@ -47,18 +47,22 @@ def init_decoder_weights(model, Y, c, kernel=None, is_unmixer=False, use_sivm=Tr
     else:
         init_em = extractor.VCA(Y, c)
         
-    model_dict = model.state_dict()
+    model_dict = model.decoder.state_dict()
     
     if kernel is not None:
-        model_dict['decoder.weight'][:, :, kernel//2, kernel//2] = init_em
+        # model_dict["weight"] = init_em.unsqueeze(-1).unsqueeze(-1).expand(Y.shape[1], c, 11, 11)
+        model_dict['weight'][:, :, kernel//2, kernel//2] = init_em
     else:
         if is_unmixer:
-            # init_em = utils.normalize(init_em, is_endmember=True)
-            model_dict["decoder.decoder.weight"][:,:,0,0] = init_em
+            if normalize:
+                init_em = utils.normalize(init_em, is_endmember=True)
+            
+            model_dict["decoder.weight"][:,:,0,0] = init_em
+
         else:
-            model_dict["decoder.0.weight"] = init_em.unsqueeze(-1).unsqueeze(-1)
+            model_dict["0.weight"] = init_em.unsqueeze(-1).unsqueeze(-1)
         
-    model.load_state_dict(model_dict)
+    model.decoder.load_state_dict(model_dict)
     return model
 
 """
@@ -109,6 +113,11 @@ class CNNAEU(nn.Module, HSUModel):
             state_dict = self.decoder.state_dict()
             state_dict["weight"] = E_init.unsqueeze(-1).unsqueeze(-1).expand(self.B, self.c, 11, 11)
             self.decoder.load_state_dict(state_dict)
+
+    @staticmethod
+    def weights_init(m):
+        if isinstance(m, nn.Conv2d):
+                nn.init.normal_(m.weight.data, mean=0.0, std=0.3)
 
     @staticmethod
     def loss(E_gt, E_hat, A_gt, A_hat, Y_gt, Y_hat):
@@ -188,11 +197,12 @@ class DeepTrans(nn.Module, HSUModel):
 
     @staticmethod
     def loss(E_gt=None, E_hat=None, A_gt=None, A_hat=None, Y_gt=None, Y_hat=None, alpha=5e3, beta=5e-2):
-        mse = nn.MSELoss(reduction="sum")
+        mse = nn.MSELoss(reduction="mean")
         sad = losses.SADLoss()
 
         B = Y_gt.shape[1]
-        loss_re = alpha * mse(Y_gt, Y_hat)/(torch.norm(Y_gt)**2)
+        # loss_re = alpha * mse(Y_gt, Y_hat)/(torch.norm(Y_gt)**2)
+        loss_re = alpha * mse(Y_gt, Y_hat)
         loss_sad = sad(Y_gt, Y_hat)
         loss_sad = beta * torch.sum(loss_sad).float()
 
@@ -219,10 +229,6 @@ class DeepTrans(nn.Module, HSUModel):
         
         e_est = self.decoder[0].weight.detach()[:,:,0,0]
         e_est = e_est.reshape(1, self.B, self.c)
-
-        print("X: ", x.shape)
-        print("Abu_est 3: ", abu_est.shape)
-        print("Cls_embed: ", cls_emb.shape)
         
         # abu_est = abu_est.reshape(1, self.c, self.im_size**2)
         # re_result = re_result.reshape(1, self.B, self.im_size**2)

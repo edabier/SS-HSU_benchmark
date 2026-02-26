@@ -429,8 +429,8 @@ def create_fm(fm_name, Y, c=None, n_features=1, patch_size=64, use_cls=False, ex
     
     return fm, Y, new_H
 
-def extract_f(fm_name, fm, Y, A, new_H, wavelengths, use_cls=False):
-    if fm_name == "DOFA":
+def reshape_Y(fm_name, new_H, Y, A):
+    if fm_name == "OFAViT": # DOFA
         if Y.shape[-1] < new_H:
             Y = F.interpolate(Y, size=(new_H,new_H))
         Y = Y[:,:,:new_H, :new_H]
@@ -439,24 +439,40 @@ def extract_f(fm_name, fm, Y, A, new_H, wavelengths, use_cls=False):
             A = F.interpolate(A, size=(new_H,new_H))
         A = A[:,:,:new_H, :new_H]
 
+    elif fm_name == "SpecViTBase":
+        if Y.shape[-1] < new_H:
+            Y = F.interpolate(Y, size=(new_H,new_H))
+        Y = Y[:,:,:new_H, :new_H]
+        
+        if A.shape[-1] < new_H:
+            A = F.interpolate(A, size=(new_H,new_H))
+        A = A[:,:,:new_H, :new_H]
+    
+    else:
+        return
+
+    return Y, A
+
+def extract_f(fm, Y, A, new_H, wavelengths, use_cls=False):
+    fm_name = fm.__class__.__name__
+
+    Y, A = reshape_Y(fm_name, new_H, Y, A)
+
+    if fm_name == "OFAViT": # DOFA
         features = get_dofa_features(fm, Y, wavelengths)
         noise = torch.rand_like(features)
 
-    elif fm_name == "HyperFree":
+    elif fm_name == "ImageEncoderViT": # HyperFree
         features = get_hyperfree_features(fm, Y, wavelengths)
         noise = torch.rand_like(features)
 
-    elif fm_name == "SpecViT":
-        if Y.shape[-1] < new_H:
-            Y = F.interpolate(Y, size=(new_H,new_H))
-        Y = Y[:,:,:new_H, :new_H]
-        
-        if A.shape[-1] < new_H:
-            A = F.interpolate(A, size=(new_H,new_H))
-        A = A[:,:,:new_H, :new_H]
+    elif fm_name == "SpecViTBase":
 
         features = get_specvit_features(fm, Y, use_cls)
         noise = torch.rand_like(features)
+    
+    else:
+        return
     
     return Y, A, features
 
@@ -622,35 +638,40 @@ class Sum_to_one(nn.Module):
         return x
 
 class Decoder(nn.Module):
-    def __init__(self, c, B, kernel_size=1):
+    def __init__(self, c, B, kernel_size=1, is_cnnaeu=False):
         super(Decoder, self).__init__()
-        padding = kernel_size //2
-        self.decoder = nn.Conv2d(in_channels=c, out_channels=B,
-                                kernel_size=kernel_size,stride=1,
-                                padding=padding, bias=False)
-        self.relu = nn.ReLU()
+        self.B = B
+        self.c = c
+        self.is_cnnaeu = is_cnnaeu
+
+        if self.is_cnnaeu:
+            self.decoder = nn.Conv2d(self.c, self.B, kernel_size=11, padding=5, padding_mode="reflect", bias=False)
+
+        else:
+            padding = kernel_size //2
+            self.decoder = nn.Conv2d(in_channels=c, out_channels=B,
+                                    kernel_size=kernel_size,stride=1,
+                                    padding=padding, bias=False)
+            self.relu = nn.ReLU()
 
     def forward(self, code):
-        code = self.relu(self.decoder(code))
+
+        if self.is_cnnaeu:
+            code = self.decoder(code)
+        
+        else:
+            code = self.relu(self.decoder(code))
+        
         return code
 
     def get_endmembers(self):
-        return self.decoder.weight.data.squeeze([2, 3])
-    
-class Upsample_block(nn.Module):
-    def __init__(self, in_channels, out_channels, kernel_size):
-        super().__init__()
-        self.conv_transpose = nn.ConvTranspose2d(
-            in_channels,
-            out_channels,
-            kernel_size=kernel_size,
-            stride=1,
-            padding=0,
-            bias=False
-        )
-
-    def forward(self, x):
-        return self.conv_transpose(x)
+        if self.is_cnnaeu:
+            e_hat = self.decoder.weight.detach().mean((2, 3))
+            e_hat = e_hat.reshape(self.B, self.c)
+            return e_hat    
+        
+        else:
+            return self.decoder.weight.data.squeeze([2, 3])
 
 def upsample_features(model_name, patch_size, Y, wavelengths=None):
     """
@@ -698,7 +719,7 @@ def upsample_features(model_name, patch_size, Y, wavelengths=None):
     return features_flat_up
 
 class Unmixing_from_features(nn.Module):
-    def __init__(self, D, B, c, H=224, alpha=None, n_features=1, use_cls=False, hypersig=False):
+    def __init__(self, D, B, c, H=224, alpha=None, n_features=1, use_cls=False, hypersig=False, is_cnnaeu=False):
         """
         Args:
             D (int): The embed_dim
@@ -760,7 +781,7 @@ class Unmixing_from_features(nn.Module):
                 )
 
         self.sum_to_one = Sum_to_one()
-        self.decoder = Decoder(B=B, c=c)
+        self.decoder = Decoder(B=B, c=c, is_cnnaeu=is_cnnaeu)
 
     @staticmethod
     def weights_init(m):
