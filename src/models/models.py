@@ -423,46 +423,7 @@ class SRViT(nn.Module, HSUModel):
         total_loss = loss_re + loss_sad + 1*loss_ss
 
         return total_loss
-
-    def forward(self, x):
-        pass
-
-class SE_AE(nn.Module):
-    def __init__(self, N, c, B, size, patch, dim, inner_dim):
-        super(SE_AE, self).__init__()
-        self.c, self.B, self.size, self.patch, self.dim, self.inner_dim = c, B, size, patch, dim, inner_dim
-
-        position_dim, poisition_code = srvit.get_poisition_code(N)
-
-        self.encoder = srvit.TNT(img_size=size, patch_size=patch, in_chans=B, outer_dim=(dim * c),
-                                     inner_dim=(inner_dim * c), depth=2, outer_num_heads=8, inner_num_heads=4,
-                                     mlp_ratio=4, qkv_bias=False, qk_scale=None, drop_rate=0., attn_drop_rate=0.,
-                                     drop_path_rate=0., norm_layer=srvit.ContraNorm, inner_stride=1)
-        self.encoder_position = srvit.TNT(img_size=size, patch_size=patch, in_chans=position_dim,
-                                              outer_dim=(dim * c), inner_dim=(inner_dim * c), depth=2,
-                                              outer_num_heads=8, inner_num_heads=4, mlp_ratio=4,
-                                              qkv_bias=False, qk_scale=None, drop_rate=0., attn_drop_rate=0.,
-                                              drop_path_rate=0., norm_layer=srvit.ContraNorm, inner_stride=1)
-
-        self.disc = srvit.Discriminator(c)
-
-        self.upscale = nn.Sequential(
-            nn.Linear(inner_dim, size ** 2),
-        )
-        self.smooth = nn.Sequential(
-            nn.Conv2d(c, c, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1)),
-            nn.Softmax(dim=1),
-        )
-        self.decoder = nn.Sequential(
-            nn.Conv2d(c, B, kernel_size=(1, 1), stride=(1, 1), bias=False),
-            nn.ReLU(),
-        )
     
-    @staticmethod
-    def weights_init(m):
-        if type(m) == nn.Conv2d:
-            nn.init.kaiming_normal_(m.weight.data)
-
     def forward(self, x, position_code):
         abu_est = self.encoder(x)
         abu_position_code = self.encoder_position(position_code)

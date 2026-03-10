@@ -2,7 +2,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 from datetime import datetime
-import gsvit_tnt
+import src.models.srvit as srvit
 device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 
 "-----------------------------------------------------------------------------------------------------------"
@@ -17,18 +17,18 @@ def norm2squ(x):
     return torch.sum(torch.pow(x, exponent=2))
 
 class embedding(nn.Module):
-    def __init__(self, B, P):
+    def __init__(self, B, c):
         super().__init__()
-        self.model = gsvit_tnt.AE().to(device)
+        self.model = srvit.AE().to(device)
         self.encoder = nn.Sequential(
-            nn.Linear(B, L // 2, bias=True),
+            nn.Linear(B, B // 2, bias=True),
             nn.ReLU(),
-            nn.Linear(L // 2, L // 4, bias=True),
+            nn.Linear(B // 2, B // 4, bias=True),
             nn.ReLU(),
-            nn.Linear(L // 4, P, bias=True),
+            nn.Linear(B // 4, c, bias=True),
             nn.Softmax(dim=1),
         )
-        self.decoder = nn.Linear(P, B, bias=False)
+        self.decoder = nn.Linear(c, B, bias=False)
 
     def forward(self, y):
         code = self.encoder(y)
@@ -63,7 +63,7 @@ class reconsitution:
             self._load_endmember(edm=init_edm, layer_name=self.edm_layer)
             self.frozen_layer = [self.edm_layer]
             self.Boss_func = self._loss_function(mode='sad')
-            h = torch.from_numpy(gsvit_tnt.smooth_matrix(height=height, width=width)).float()
+            h = torch.from_numpy(srvit.smooth_matrix(height=height, width=width)).float()
             self.s0 = torch.abs(h) > 0.1
             self.s1 = h < -0.1
             self.s2 = torch.eye(height*width)
