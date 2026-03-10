@@ -50,6 +50,7 @@ def run_one_xp(mses, sads, n, B, c, N, H, loader, dataset, args, dev):
     """
     for i_model, model in enumerate(model_list):
         model_name = model.__class__.__name__
+        model = model.to(dev)
 
         if model_name == "NALMU" or model_name == "RALMU":
             model_name += str(model.T)

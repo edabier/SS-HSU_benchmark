@@ -27,6 +27,8 @@ def train(model, dataloader, patch_size=None, has_decoder=True, epochs=320, lr=0
     model_name = model.__class__.__name__
     if model_name == "NALMU" or model_name == "RALMU":
         model_name += str(model.T)
+    
+    model = model.to(dev)
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
     train_losses = []

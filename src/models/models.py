@@ -235,96 +235,6 @@ class DeepTrans(nn.Module, HSUModel):
         
         return e_est, abu_est, re_result
 
-class DeepTransDOFA(nn.Module, HSUModel):
-    """
-    Args:
-        B (int): the number of spectral bands
-        c (int): the number of endmembers
-        im_size (int): the height (or width) of the image (expects square image)
-        patch_size (int, optional): how much to split the input image (default: 5)
-        embed_dim (int, optional): the dimension of the features extracted 
-    """
-    def __init__(self, B, c, im_size, patch_size=5, embed_dim=24, use_cls=False):
-        super(DeepTransDOFA, self).__init__()
-        self.B, self.c, self.im_size, self.embed_dim = B, c, im_size, embed_dim
-        self.patch_size, self.use_cls = patch_size, use_cls
-
-        if self.use_cls:
-            self.encoder = nn.Sequential(
-                nn.Linear(int(768/c), self.im_size**2)
-            )
-        else:
-            self.upsample = nn.Linear(14*14, im_size ** 2)
-            self.encoder = nn.Sequential(
-                nn.Conv2d(768, c, kernel_size=1),
-                nn.LeakyReLU(0.02),
-                nn.BatchNorm2d(c),
-                nn.Dropout(0.2)
-            )
-
-        self.vtrans = transformer.ViT(image_size=im_size, patch_size=patch_size, embed_dim=(embed_dim*c), depth=2,
-                                      heads=8, mlp_dim=12, pool='cls')
-        
-        self.upscale = nn.Sequential(
-            nn.Linear(embed_dim, im_size ** 2),
-        )
-        
-        self.smooth = nn.Sequential(
-            nn.Conv2d(c, c, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1)),
-            nn.Softmax(dim=1),
-        )
-
-        self.decoder = nn.Sequential(
-            nn.Conv2d(c, B, kernel_size=(1, 1), stride=(1, 1), bias=False),
-            nn.ReLU(),
-        )
-
-    @staticmethod
-    def weights_init(m):
-        if type(m) == nn.Conv2d:
-            nn.init.kaiming_normal_(m.weight.data)
-
-    @staticmethod
-    def loss(E_gt=None, E_hat=None, A_gt=None, A_hat=None, Y_gt=None, Y_hat=None, alpha=4e3, beta=5e-2):
-
-        B = Y_gt.shape[1]
-        loss_func = nn.MSELoss(reduction='mean')
-        loss_func2 = SAD(B)
-        loss_re = alpha * loss_func(Y_hat, Y_gt)
-        loss_sad = loss_func2(Y_hat.view(1, B, -1).transpose(1, 2),
-                                Y_gt.view(1, B, -1).transpose(1, 2))
-        loss_sad = beta * torch.sum(loss_sad).float()
-
-        total_loss = loss_re + loss_sad
-        return total_loss
-
-    def forward(self, features):
-        # Input shape (1, D) 
-        # Output shapes Y: (batch, B, N)
-        # E: (batch, B, c)
-        # A: (batch, c, N)
-        if self.use_cls:
-            features_2d = features.reshape(self.c, int(768/self.c))
-            abu_est = self.encoder(features_2d)
-        else:
-            features_up = self.upsample(features).reshape(1, 768, 224, 224)
-            abu_est = self.encoder(features_up)
-
-        abu_est = abu_est.reshape(1, self.c, self.im_size, self.im_size)
-        cls_emb = self.vtrans(abu_est)
-        cls_emb = cls_emb.view(1, self.c, -1)
-        abu_est = self.upscale(cls_emb).view(1, self.c, self.im_size, self.im_size)
-        abu_est = self.smooth(abu_est)
-        re_result = self.decoder(abu_est)
-        
-        e_est = self.decoder[0].weight.detach()[:,:,0,0]
-        e_est = e_est.reshape(1, self.B, self.c)
-        
-        abu_est = abu_est.reshape(1, self.c, self.im_size**2)
-        re_result = re_result.reshape(1, self.B, self.im_size**2)
-        
-        return e_est, abu_est, re_result
-
 class UnDIP(nn.Module, HSUModel):
     def __init__(self, B, c, kernel_size=3):
         super().__init__()
@@ -348,14 +258,14 @@ class UnDIP(nn.Module, HSUModel):
         # MiSiCNet-like architecture
         self.layer1 = nn.Sequential(
             nn.ReflectionPad2d(self.padding[0]),
-            nn.Conv2d(self.B, 256, self.kernel_sizes[0], stride=self.strides[0]),
+            nn.Conv2d(self.B, 256, self.kernel_sizes[0], stride=self.strides[0], bias=False),
             nn.BatchNorm2d(256),
             nn.LeakyReLU(**self.lrelu_params),
         )
 
         self.layer2 = nn.Sequential(
             nn.ReflectionPad2d(self.padding[1]),
-            nn.Conv2d(256, 256, self.kernel_sizes[1], stride=self.strides[1]),
+            nn.Conv2d(256, 256, self.kernel_sizes[1], stride=self.strides[1], bias=False),
             nn.BatchNorm2d(256),
             nn.LeakyReLU(**self.lrelu_params),
         )
@@ -364,7 +274,7 @@ class UnDIP(nn.Module, HSUModel):
 
         self.layerskip = nn.Sequential(
             nn.ReflectionPad2d(self.padding[-1]),
-            nn.Conv2d(self.B, 4, self.kernel_sizes[-1], stride=self.strides[-1]),
+            nn.Conv2d(self.B, 4, self.kernel_sizes[-1], stride=self.strides[-1], bias=False),
             nn.BatchNorm2d(4),
             nn.LeakyReLU(**self.lrelu_params),
         )
@@ -372,14 +282,14 @@ class UnDIP(nn.Module, HSUModel):
         self.layer3 = nn.Sequential(
             nn.BatchNorm2d(260),
             nn.ReflectionPad2d(self.padding[2]),
-            nn.Conv2d(260, 256, self.kernel_sizes[2], stride=self.strides[2]),
+            nn.Conv2d(260, 256, self.kernel_sizes[2], stride=self.strides[2], bias=False),
             nn.BatchNorm2d(256),
             nn.LeakyReLU(**self.lrelu_params),
         )
 
         self.layer4 = nn.Sequential(
             nn.ReflectionPad2d(self.padding[3]),
-            nn.Conv2d(256, 256, self.kernel_sizes[3], stride=self.strides[3]),
+            nn.Conv2d(256, 256, self.kernel_sizes[3], stride=self.strides[3], bias=False),
             nn.BatchNorm2d(256),
             nn.LeakyReLU(**self.lrelu_params),
         )

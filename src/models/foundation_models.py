@@ -449,7 +449,7 @@ def reshape_Y(fm_name, new_H, Y, A):
         A = A[:,:,:new_H, :new_H]
     
     else:
-        return
+        return Y, A
 
     return Y, A
 
@@ -673,51 +673,6 @@ class Decoder(nn.Module):
         else:
             return self.decoder.weight.data.squeeze([2, 3])
 
-def upsample_features(model_name, patch_size, Y, wavelengths=None):
-    """
-    Author: Antoine Domingues
-    Extracts features from the input hsi Y and a padded version to create upsampled
-    features by averaging the overlapping features
-    
-    Args:
-        model_name: Which FM to use to extract features
-        patch_size: The patch size used by the model
-        Y: The input hsi from which to extract the features (must be of shape (batch, B, H, W) or (B, H, W))
-    """
-
-    if Y.dim() < 4:
-        Y = Y.unsqueeze(0)
-
-    padding_size = patch_size//2
-    padding = Pad(padding_size)
-    input_padded_img = padding(Y)
-
-    # Extract the features of the two views
-    H = Y.shape[2]
-
-    if model_name == "DOFA":
-        assert wavelengths != None, "Wavelengths list must be set for DOFA features extraction"
-        extracted_features = get_dofa_features(Y, wavelengths).reshape(1, H//patch_size, H//patch_size, -1) # (1, 14, 14, 768)
-        extracted_features_shifted = get_dofa_features(input_padded_img, wavelengths).reshape(1, H//patch_size + 1, H//patch_size + 1, -1) # (1, ?, ?, 768)
-
-    # Might be more difficult as DOFA needs input shape to be exactly 224 and thus cannot take padded input
-
-    extracted_features = extracted_features.permute(0, 3, 1, 2)
-    extracted_features_shifted = extracted_features_shifted.permute(0, 3, 1, 2)
-
-    # Duplicate the features via nearest neighbor interpolation to match the final resolution
-    features_up = torch.nn.functional.interpolate(extracted_features, scale_factor=2, mode='nearest')
-    features_up_shifted = torch.nn.functional.interpolate(extracted_features_shifted, scale_factor=2, mode='nearest')
-
-    # Take only the center features
-    features_up_shifted = features_up_shifted[:, :, 1:-1, 1:-1]
-
-    # Gather the features to perform the average pixel-wise
-    all_features = torch.cat((features_up, features_up_shifted), dim=0).permute(0, 2, 3, 1) # (2, 128, 128, 1024)
-    features_up = all_features.mean(dim=0, keepdim=True)
-    features_flat_up = features_up.flatten(1, 2)
-    return features_flat_up
-
 class Unmixing_from_features(nn.Module):
     def __init__(self, D, B, c, H=224, alpha=None, n_features=1, use_cls=False, hypersig=False, is_cnnaeu=False):
         """
@@ -755,12 +710,12 @@ class Unmixing_from_features(nn.Module):
         # Upsampled features to abundances
         if self.hypersig:
             self.abundance_estimator = nn.Sequential(
-                nn.Conv2d(D*4, D*2, kernel_size=(3, 3), padding=1),
+                nn.Conv2d(D*4, D*2, kernel_size=(3, 3), padding=1, bias=False),
                 nn.LeakyReLU(0.02),
                 nn.BatchNorm2d(D*2),
                 nn.Dropout(0.2),
                 nn.Conv2d(D*2, D, kernel_size=(1, 1)),
-                nn.Conv2d(D, c, kernel_size=1),
+                nn.Conv2d(D, c, kernel_size=1, bias=False),
                 nn.LeakyReLU(0.02),
                 nn.BatchNorm2d(c),
                 nn.Dropout(0.2),
@@ -774,7 +729,7 @@ class Unmixing_from_features(nn.Module):
 
             else:
                 self.abundance_estimator = nn.Sequential(
-                    nn.Conv2d(D, c, kernel_size=1),
+                    nn.Conv2d(D, c, kernel_size=1, bias=False),
                     nn.LeakyReLU(0.02),
                     nn.BatchNorm2d(c),
                     nn.Dropout(0.2)
@@ -877,138 +832,7 @@ class Unmixing_from_features(nn.Module):
         E_hat = self.decoder.get_endmembers()
 
         return E_hat, A_hat, Y_hat
-
-class DeepTrans_from_features(nn.Module):
-    def __init__(self, D, B, c, H=224, alpha=None, n_features=1):
-        """
-        Args:
-            D (int): The embed_dim
-            B (int): The number of spectral bands in the hsi
-            c (int): The number of endmembers to extract
-            H (int): The size of the input hsi
-            alpha (int): The size of the features
-            n_features (int): The size of the list of features in the case of several extracted features
-
-        """
-        super(DeepTrans_from_features, self).__init__()
-        self.D = D
-        self.alpha = alpha
-        self.B = B
-        self.c = c
-        self.H = H
-        self.n_features = n_features
-        self.im_size = (H//5)*5
-
-        self.upsample = nn.Sequential(
-            nn.Linear(self.n_features*(self.alpha**2), self.im_size**2)
-        )
-
-        self.vtrans = transformer.ViT(image_size=self.im_size, patch_size=5, embed_dim=(200*c), depth=2,
-                                    heads=8, mlp_dim=12, pool='cls')
-        
-        self.upscale = nn.Sequential(
-            nn.Linear(200, self.im_size ** 2),
-        )
-        
-        self.smooth = nn.Sequential(
-            nn.Conv2d(c, c, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1)),
-            nn.Softmax(dim=1),
-        )
-
-        self.decoder = nn.Sequential(
-            nn.Conv2d(c, B, kernel_size=(1, 1), stride=(1, 1), bias=False),
-            nn.ReLU(),
-        )
-
-    @staticmethod
-    def weights_init(m):
-        if type(m) == nn.Conv2d:
-            nn.init.kaiming_normal_(m.weight.data)
-
-    @staticmethod
-    def loss(Y_gt, Y_hat, A_hat, E_hat, W_sad=1, W_ab=0.35, W_tv_e=0.1, W_tv_a=0, W_mse=0, W_e=0, hypersigma=False):
-        sad = losses.SADLoss()
-        tv = losses.TVLoss(reduction="mean")
-        mse = nn.MSELoss(reduction='sum')
-        
-        loss_sad = W_sad * sad(Y_gt, Y_hat)
-        loss_ab = W_ab * torch.sqrt(A_hat).mean()
-
-        if hypersigma:
-            loss_mse = W_mse * losses.hypersigma_mse(Y_gt, Y_hat)
-        else:
-            loss_mse = W_mse * mse(Y_gt, Y_hat)/(torch.norm(Y_gt)**2)
-        
-        # Enforce Sum of all wavelength to be 1 for each endmember:
-        # Minimize 1 - sum(E[:,i]) for i in c
-        loss_norm_e = W_e * torch.norm(torch.ones(E_hat.shape[1]) - torch.sum(E_hat, dim=0))
-
-        # TV on endmembers (sum of difference between consecutive endmembers)
-        loss_tv_e = W_tv_e * (torch.abs(E_hat[:, 1:] - E_hat[:, :-1]).sum())
-
-        # TV on abundances (sum of difference between consecutive horizontal pixels + vertical pixels)
-        # loss_tv_a = W_tv_a * torch.abs(A_hat[:, :, :, 1:] - A_hat[:, :, :, :-1]).sum() + torch.abs(A_hat[:, :, 1:, :] - A_hat[:, :, :-1, :]).sum()
-        loss_tv_a = W_tv_a * tv(A_hat)
-
-        loss = loss_sad + loss_ab + loss_tv_e + loss_tv_a + loss_mse + loss_norm_e
-
-        return loss, loss_sad, loss_ab, loss_tv_e, loss_tv_a, loss_mse, loss_norm_e
-
-    def freeze_decoder(self):
-        """
-        Normalizes the weights of the decoder and freezes it
-        """
-        state_dict = self.decoder.state_dict()
-        E_hat = self.decoder.get_endmembers()
-        E_hat = utils.normalize(E_hat, is_endmember=True)
-        state_dict["decoder.weight"][:, :, 0, 0] = E_hat
-        self.decoder.load_state_dict(state_dict)
-
-        for param in self.decoder.parameters():
-            param.requires_grad = False
-
-    @staticmethod
-    def supervised_loss(Y_gt, Y_hat, A_gt, A_hat, E_gt, E_hat):
-        sad = losses.SADLoss()
-        mse = nn.MSELoss(reduction='sum')
-
-        loss_re = sad(Y_gt, Y_hat)
-        loss_mse = mse(A_gt, A_hat)/(torch.norm(A_gt)**2)
-        loss_sad = sad(E_gt, E_hat)
-        loss = loss_re + loss_mse + loss_sad
-
-        return loss, loss_re, loss_sad, loss_mse
-    
-    def get_abundances(self, features):
-
-        features = features.reshape(self.D, self.n_features*self.alpha*self.alpha)
-        features_up = self.upsample(features)
-        features_up = features_up.view(
-            1, self.D, self.im_size, self.im_size
-        )
-        features_up = (features_up - features_up.mean())/ (1e-8 + features_up.std())
-
-        cls_emb = self.vtrans(features_up)
-        cls_emb = cls_emb.view(1, self.c, -1)
-        abu_est = self.upscale(cls_emb).view(1, self.c, self.im_size, self.im_size)
-        abu_est = self.smooth(abu_est)
-        
-        return abu_est
-    
-    def get_endmembers(self):
-        
-        e_est = self.decoder[0].weight.detach()[:,:,0,0]
-        e_est = e_est.reshape(1, self.B, self.c)
-
-        return e_est
-    
-    def forward(self, features):
-        A_hat = self.get_abundances(features)
-        Y_hat = self.decoder(A_hat)
-        E_hat = self.get_endmembers()
-
-        return E_hat, A_hat, Y_hat
-    
+ 
 class CNNAEU_with_decoder(nn.Module):
     def __init__(self, B, c, decoder=None, E_init=None, freeze_E=True):
         super().__init__()
