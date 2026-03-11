@@ -40,7 +40,7 @@ class weightConstraint(object):
         if hasattr(module, 'weight'):
             module.weight.clamp_(min=0)
 
-def init_decoder_weights(model, Y, c, kernel=None, is_unmixer=False, use_sivm=True, is_cnnaeu=False, normalize=False):
+def init_decoder_weights(model, Y, c, kernel=None, is_unmixer=False, use_sivm=True, model_name=None, normalize=False):
     """
     Initializes the model's decoder weights with VCA extracted endmembers
     input Y must be of shape (B, N) or (B, H, W) -> no batch
@@ -49,21 +49,25 @@ def init_decoder_weights(model, Y, c, kernel=None, is_unmixer=False, use_sivm=Tr
         init_em = extractor.SiVM(Y, c)
     else:
         init_em = extractor.VCA(Y, c)
-        
-    model_dict = model.decoder.state_dict()
-    
-    if kernel is not None:
-        # model_dict["weight"] = init_em.unsqueeze(-1).unsqueeze(-1).expand(Y.shape[1], c, 11, 11)
-        model_dict['weight'][:, :, kernel//2, kernel//2] = init_em
-    else:
-        if is_unmixer:
-            if normalize:
-                init_em = utils.normalize(init_em, is_endmember=True)
-            
-            model_dict["decoder.weight"][:,:,0,0] = init_em
 
+    if normalize:
+        init_em = utils.normalize(init_em, is_endmember=True)
+
+    model_dict = model.decoder.state_dict()
+
+    if model_name == "SRViT":
+        model_dict["weight"] = init_em
+        
+    else:
+        if kernel is not None:
+            # model_dict["weight"] = init_em.unsqueeze(-1).unsqueeze(-1).expand(Y.shape[1], c, 11, 11)
+            model_dict['weight'][:, :, kernel//2, kernel//2] = init_em
         else:
-            model_dict["0.weight"] = init_em.unsqueeze(-1).unsqueeze(-1)
+            if is_unmixer:                
+                model_dict["decoder.weight"][:,:,0,0] = init_em
+
+            else:
+                model_dict["0.weight"] = init_em.unsqueeze(-1).unsqueeze(-1)
         
     model.decoder.load_state_dict(model_dict)
     return model
@@ -374,7 +378,7 @@ class SRViT(nn.Module, HSUModel):
         super(SRViT, self).__init__()
         self.c, self.B, self.size, self.patch, self.dim, self.inner_dim = c, B, size, patch, dim, inner_dim
 
-        position_dim, _ = srvit.get_position_code_code(N)
+        position_dim, _ = srvit.get_position_code(N)
         
         self.encoder = srvit.TNT(img_size=size, patch_size=patch, in_chans=B, outer_dim=(dim * c),
                                      inner_dim=(inner_dim * c), depth=2, outer_num_heads=8, inner_num_heads=4,
@@ -400,8 +404,8 @@ class SRViT(nn.Module, HSUModel):
             nn.ReLU(),
         )
 
-        self.embedder = srvit_emb.reconsitution(B=self.B, c=self.c, init_edm=self.edm.T, height=N,
-                                        width=N, version='com', seed=30)
+        self.embedder = srvit_emb.reconsitution(B=self.B, c=self.c, height=N,
+                                        width=N, seed=30)
 
     @staticmethod
     def weights_init(m):
@@ -432,7 +436,11 @@ class SRViT(nn.Module, HSUModel):
         abu_est = self.upscale(cls_emb).view(1, self.c, self.size, self.size)
         abu_est = self.smooth(abu_est)
         re_result = self.decoder(abu_est)
-        return abu_est, re_result, ret_os
+
+        e_est = self.decoder[0].weight.detach()[:,:,0,0]
+        e_est = e_est.reshape(1, self.B, self.c)
+
+        return abu_est, re_result, ret_os, e_est
 
 """
 Unrolling

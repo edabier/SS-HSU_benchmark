@@ -35,40 +35,40 @@ default_cfgs = {
     ),
 }
 
-def get_position_code_code(N):
+def get_position_code(H, in_window=3, out_window=7):
     
-    window = 3  # Int_indow size
-    length = 7  # out_window size
-    n_r = math.ceil(N / window)
-    n_c = math.ceil(N / window)
-    position_matrix = np.zeros((N, N))
+    n_r = math.ceil(H / in_window)
+    n_c = math.ceil(H / in_window)
+    position_matrix = np.zeros((H, H))
+
     i = 1
     for x in range(n_r):
         for y in range(n_c):
             if x < (n_r - 1):
                 if y < (n_c - 1):
-                    position_matrix[x * window:(x * window + window), y * window:(y * window + window)] = i
+                    position_matrix[x * in_window:(x * in_window + in_window), y * in_window:(y * in_window + in_window)] = i
                     i = i + 1
                 else:
-                    position_matrix[x * window:(x * window + window), y * window:] = i
+                    position_matrix[x * in_window:(x * in_window + in_window), y * in_window:] = i
                     i = i + 1
             else:
                 if y < (n_c - 1):
-                    position_matrix[x * window:, y * window:(y * window + window)] = i
+                    position_matrix[x * in_window:, y * in_window:(y * in_window + in_window)] = i
                     i = i + 1
                 else:
-                    position_matrix[x * window:, y * window:] = i
+                    position_matrix[x * in_window:, y * in_window:] = i
                     i = i + 1
-    num_position = n_r * n_c
-    half = (length - 1) // 2
-    position_fea = np.zeros((N + length, N + length))
+    
+    half = (out_window - 1) // 2
+    position_fea = np.zeros((H + out_window, H + out_window))
 
-    position_fea[half:half + N, half:half + N] = position_matrix
+    position_fea[half:half + H, half:half + H] = position_matrix
     position_dim = n_r * n_c
-    position_code = np.zeros((N, N, n_r * n_c))
+    position_code = np.zeros((H, H, n_r * n_c))
     position_vector = np.zeros((n_r * n_c))
-    for i in range(N):
-        for j in range(N):
+
+    for i in range(H):
+        for j in range(H):
             x = i + half
             y = j + half
             window_num = position_fea[(x-half):(x + half), (y-half):(y+half)]
@@ -78,6 +78,7 @@ def get_position_code_code(N):
             unique_num = np.array(unique_num, dtype=int)
             position_vector[unique_num] = unique_count
             position_code[i, j, :] = position_vector
+
     return position_dim, position_code
 
 class Discriminator(nn.Module):

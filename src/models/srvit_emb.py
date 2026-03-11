@@ -46,7 +46,7 @@ class TimeReminder:
         return datetime.now() - self.start
 
 class reconsitution:
-    def __init__(self, B, c, init_edm=None, height=None, width=None, version='com', seed=30):
+    def __init__(self, B, c, init_edm=None, height=None, width=None, seed=30):
         super(reconsitution, self).__init__()
         if seed:
             torch.manual_seed(seed)
@@ -54,35 +54,31 @@ class reconsitution:
         self.reg_decay = 1e-7
         self.unfreeze_time = 0.9
         self.input_shape = (B,)
-        if version == 'com':
-            self.model = embedding(B, c).to(device)
-            self.Br_decay = 0.9
-            self.reg_norm: list = [2, 2, 2]
-            self.reg_layer: list = ['encoder.0.weight', 'encoder.2.weight', 'encoder.4.weight']
-            self.edm_layer = 'decoder.weight'
-            self._load_endmember(edm=init_edm, layer_name=self.edm_layer)
-            self.frozen_layer = [self.edm_layer]
-            self.Boss_func = self._loss_function(mode='sad')
-            h = torch.from_numpy(srvit.smooth_matrix(height=height, width=width)).float()
-            self.s0 = torch.abs(h) > 0.1
-            self.s1 = h < -0.1
-            self.s2 = torch.eye(height*width)
-            self.h = h.to(device)
-            self.h.requires_grad = True
-            self.s0 = self.s0.to(device)
-            self.s1 = self.s1.to(device)
-            self.s2 = self.s2.to(device)
-            self.unfreeze_time = 0.9
-            self.opt = torch.optim.Adam([{'params': self.model.encoder.parameters(), 'lr': 1e-3},
-                                         {'params': self.model.decoder.parameters(), 'lr': 1e-2},
-                                         {'params': self.h, 'lr': 1e-1}])
-        else:
-            raise Exception('Version Error. com/cnn')
+        self.model = embedding(B, c).to(device)
+        self.Br_decay = 0.9
+        self.reg_norm: list = [2, 2, 2]
+        self.reg_layer: list = ['encoder.0.weight', 'encoder.2.weight', 'encoder.4.weight']
+        self.edm_layer = 'decoder.weight'
+        # self._load_endmember(edm=init_edm, layer_name=self.edm_layer)
+        self.frozen_layer = [self.edm_layer]
+        self.Boss_func = self._loss_function(mode='sad')
+        h = torch.from_numpy(srvit.smooth_matrix(height=height, width=width)).float()
+        self.s0 = torch.abs(h) > 0.1
+        self.s1 = h < -0.1
+        self.s2 = torch.eye(height*width)
+        self.h = h.to(device)
+        self.h.requires_grad = True
+        self.s0 = self.s0.to(device)
+        self.s1 = self.s1.to(device)
+        self.s2 = self.s2.to(device)
+        self.unfreeze_time = 0.9
+        self.opt = torch.optim.Adam([{'params': self.model.encoder.parameters(), 'lr': 1e-3},
+                                        {'params': self.model.decoder.parameters(), 'lr': 1e-2},
+                                        {'params': self.h, 'lr': 1e-1}])
         self.B, self.c = B, c
         self.new_edm = 0
         self.height = height
         self.width = width
-        self.version = version
         self.edm = init_edm
         self.timer = TimeReminder()
 
@@ -118,12 +114,9 @@ class reconsitution:
         return r_loss
 
     def _special_loss(self, code, output):
-        if self.version == 'com':
-            return 1e-6 * norm2squ(torch.mm(self.h*self.s0, code)) +\
-                   5 * (norm2squ(torch.sum(self.h*self.s1, dim=0)+torch.tensor(1).cpu()) +
-                        norm2squ(self.h*self.s2-self.s2))
-        else:
-            return 0
+        return 1e-6 * norm2squ(torch.mm(self.h*self.s0, code)) +\
+                5 * (norm2squ(torch.sum(self.h*self.s1, dim=0)+torch.tensor(1).cpu()) +
+                    norm2squ(self.h*self.s2-self.s2))
 
     @staticmethod
     def _loss_function(mode='sad'):
@@ -135,7 +128,7 @@ class reconsitution:
             raise Exception('Version Error! sad/')
 
     def fit(self, y, max_iter=200):
-        pix = torch.from_numpy(y.T).float().to(device)
+        pix = y.T.float().to(device)
         self._freeze()
         loss_record = 1e5
         epoch = 0

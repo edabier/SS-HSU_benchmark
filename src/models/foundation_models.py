@@ -14,9 +14,9 @@ import src.models.transformer as transformer
 import src.utils.utils as utils
 import src.utils.losses as losses
 
-global_path = "/home/ids/edabier/HSU"
+# global_path = "/home/ids/edabier/HSU"
 # global_path = "/Users/edabier/Documents/Thèse/Thèse_Télécom"
-# global_path = "/home/edabier/Documents/Thèse/benchmark"
+global_path = "/home/edabier/Documents/Thèse/benchmark"
 sys.path.append(global_path)
 
 sys.path.append(f"{global_path}/spectral_earth")
