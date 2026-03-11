@@ -212,6 +212,17 @@ def normalize(X, is_endmember=False):
 
     return X_norm
 
+def load_dataset(dataset, path="/home/ids/edabier/HSU/SS-HSU_benchmark/datasets/", dtype=torch.float):
+    data_path = path + dataset + ".mat"
+    data = io.loadmat(data_path)
+        
+    Y = torch.tensor(data['Y'], dtype=dtype)
+    A = torch.tensor(data['A'], dtype=dtype)
+    E = torch.tensor(data['E'], dtype=dtype)
+
+    return Y, E, A
+
+
 class HSI_dataset(Dataset):    
     def __init__(self, dataset, path="/home/ids/edabier/HSU/SS-HSU_benchmark/datasets/", patch_size=None, dtype=None, deeptrans=False):
         

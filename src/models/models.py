@@ -40,11 +40,12 @@ class weightConstraint(object):
         if hasattr(module, 'weight'):
             module.weight.clamp_(min=0)
 
-def init_decoder_weights(model, Y, c, kernel=None, is_unmixer=False, use_sivm=True, model_name=None, normalize=False):
+def init_decoder_weights(model, Y, c, kernel=None, is_unmixer=False, use_sivm=True, model_name=None, normalize=False, return_E=False):
     """
     Initializes the model's decoder weights with VCA extracted endmembers
     input Y must be of shape (B, N) or (B, H, W) -> no batch
     """
+
     if use_sivm:
         init_em = extractor.SiVM(Y, c)
     else:
@@ -70,7 +71,12 @@ def init_decoder_weights(model, Y, c, kernel=None, is_unmixer=False, use_sivm=Tr
                 model_dict["0.weight"] = init_em.unsqueeze(-1).unsqueeze(-1)
         
     model.decoder.load_state_dict(model_dict)
-    return model
+
+    if return_E:
+        return model, init_em
+
+    else:
+        return model
 
 """
 Autoencoders
