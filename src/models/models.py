@@ -9,7 +9,6 @@ import math
 
 import src.models.transformer as transformer
 import src.models.srvit as srvit
-import src.models.srvit_emb as srvit_emb
 import src.utils.extractor as extractor
 import src.utils.utils as utils
 import src.utils.losses as losses
@@ -378,40 +377,34 @@ class UnDIP(nn.Module, HSUModel):
         
         return e_hat, a_hat, y_hat
 
-class SRViT(nn.Module, HSUModel):
-
-    def __init__(self,  N, c, B, size, patch, dim, inner_dim):
+class SRViT(nn.Module):
+    def __init__(self, B, c, H, patch, inner_patch, dim, inner_dim, W=None):
         super(SRViT, self).__init__()
-        self.c, self.B, self.size, self.patch, self.dim, self.inner_dim = c, B, size, patch, dim, inner_dim
-
-        position_dim, _ = srvit.get_position_code(N)
+        self.B, self.c, self.H, self.patch, self.inner_patch, self.dim, self.inner_dim = B, c, H, patch, inner_patch, dim, inner_dim
         
-        self.encoder = srvit.TNT(img_size=size, patch_size=patch, in_chans=B, outer_dim=(dim * c),
-                                     inner_dim=(inner_dim * c), depth=2, outer_num_heads=8, inner_num_heads=4,
-                                     mlp_ratio=4, qkv_bias=False, qk_scale=None, drop_rate=0., attn_drop_rate=0.,
-                                     drop_path_rate=0., norm_layer=srvit.ContraNorm, inner_stride=1)
-        self.encoder_position = srvit.TNT(img_size=size, patch_size=patch, in_chans=position_dim,
-                                              outer_dim=(dim * c), inner_dim=(inner_dim * c), depth=2,
-                                              outer_num_heads=8, inner_num_heads=4, mlp_ratio=4,
-                                              qkv_bias=False, qk_scale=None, drop_rate=0., attn_drop_rate=0.,
-                                              drop_path_rate=0., norm_layer=srvit.ContraNorm, inner_stride=1)
+        # Non-square image
+        if W != None:
+            self.W = W
+        else:
+            self.W = H
 
-        self.disc = srvit.Discriminator(c)
+        self.encoder = srvit.TNT(img_size=(self.H, self.W), patch_size=patch, in_chans=B, outer_dim=(dim * c),
+                               inner_dim=(inner_dim * c), depth=2, outer_num_heads=8, inner_num_heads=1,
+                               norm_layer=nn.LayerNorm, inner_stride=1)
 
         self.upscale = nn.Sequential(
-            nn.Linear(inner_dim, size ** 2),
+            nn.Linear(inner_dim, self.H * self.W),
         )
+
         self.smooth = nn.Sequential(
             nn.Conv2d(c, c, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1)),
             nn.Softmax(dim=1),
         )
+
         self.decoder = nn.Sequential(
             nn.Conv2d(c, B, kernel_size=(1, 1), stride=(1, 1), bias=False),
             nn.ReLU(),
         )
-
-        self.embedder = srvit_emb.reconsitution(B=self.B, c=self.c, height=N,
-                                        width=N, seed=30)
 
     @staticmethod
     def weights_init(m):
@@ -419,34 +412,29 @@ class SRViT(nn.Module, HSUModel):
             nn.init.kaiming_normal_(m.weight.data)
     
     @staticmethod
-    def loss(E_hat=None, A_hat=None, Y_gt=None, Y_hat=None, ret_os=None, alpha=5e3, beta=5e-2):
-        mse = nn.MSELoss(reduction='mean')
+    def loss(E_hat=None, A_hat=None, Y_gt=None, Y_hat=None, alpha=5e3, beta=5e-2):
+        mse = nn.MSELoss(reduction='sum')
         sad = losses.SADLoss()
-        b_xent = nn.BCEWithLogitsLoss().to(Y_gt.device)
 
         loss_re = alpha * mse(Y_gt, Y_hat)
         loss_sad = sad(Y_gt, Y_hat)
         loss_sad = beta * torch.sum(loss_sad).float()
-        
-        lbl = (torch.ones(ret_os.shape[0], 1)).to(Y_gt.device)
-        loss_ss = b_xent(ret_os, lbl.float())
-        total_loss = loss_re + loss_sad + 1*loss_ss
+
+        total_loss = loss_re + loss_sad
 
         return total_loss
-    
-    def forward(self, x, position_code):
-        abu_est = self.encoder(x)
-        abu_position_code = self.encoder_position(position_code)
-        cls_emb = (abu_est*abu_position_code).view(1, self.c, -1)
-        ret_os = self.disc(abu_est, abu_position_code)
-        abu_est = self.upscale(cls_emb).view(1, self.c, self.size, self.size)
+
+    def forward(self, x):
+        cls_emb = self.encoder(x)
+        cls_emb = cls_emb.view(1, self.c, -1)
+        abu_est = self.upscale(cls_emb).view(1, self.c, self.H, self.W)
         abu_est = self.smooth(abu_est)
         re_result = self.decoder(abu_est)
 
-        e_est = self.decoder[0].weight.detach()[:,:,0,0]
+        e_est = self.state_dict()["decoder.0.weight"].detach()
         e_est = e_est.reshape(1, self.B, self.c)
 
-        return abu_est, re_result, ret_os, e_est
+        return re_result, e_est, abu_est
 
 """
 Unrolling

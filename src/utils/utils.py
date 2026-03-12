@@ -145,9 +145,10 @@ def crop_patch_image(Y, patch_size, A=None):
         else:
             return Y
 
-def oneD_to_2d(Y):
+def oneD_to_2d(Y, H=None, W=None):
     """
     Reshapes 1D tensors to 2D image
+    If H and W are not passed, assumes the image is square
     
     Args:
         Y: input tensor to be reshaped
@@ -155,12 +156,20 @@ def oneD_to_2d(Y):
     is_batched = Y.dim()==3
     if is_batched:
         batch, B, N = Y.shape
-        H = int(N**0.5)
-        return Y.reshape(batch, B, H, H)
+        if H != None:
+            return Y.reshape(batch, B, H, W)
+        
+        else:
+            H = int(N**0.5)
+            return Y.reshape(batch, B, H, H)
     else:
         B, N = Y.shape
-        H = int(N**0.5)
-        return Y.reshape(B, H, H)
+        if H != None:
+            return Y.reshape(B, H, W)
+        
+        else:
+            H = int(N**0.5)
+            return Y.reshape(B, H, H)
 
 def sum_to_one(Y, is_endmember=False):
     """
