@@ -161,7 +161,7 @@ def run_one_xp(n, dataset, mses, sads, mses_cnn, sads_cnn, Y_init, wavelengths, 
                     E_hat, A_hat, Y_hat = rsfm.unmix_full_image_hypersigma(Y, model, fm, c, use_bn=True)
                 
                 else:
-                    Y, A, features = rsfm.extract_f(model_name, fm, Y, A, new_H, wavelengths, use_cls=False)
+                    Y, A, features = rsfm.extract_f(model_name, fm, Y, new_H, wavelengths, A, use_cls=False)
                     E_hat, A_hat, Y_hat = model(features)
                 
                 Yn = utils.sum_to_one(Y)
@@ -182,7 +182,7 @@ def run_one_xp(n, dataset, mses, sads, mses_cnn, sads_cnn, Y_init, wavelengths, 
             E_hat1, A_hat1, Y_hat1 = rsfm.unmix_full_image_hypersigma(Y_init, model, fm, c, patch_size=64, use_bn=True)
 
         else:
-            _, A, features = rsfm.extract_f(model_name, fm, Y_init, A, new_H, wavelengths)
+            _, A, features = rsfm.extract_f(model_name, fm, Y_init, new_H, wavelengths, A)
             E_hat1, A_hat1, Y_hat1 = model(features)
 
         sad, mse = utils.plot_results(E_hat1, A_hat1, A, E, normalize_E=True, normalize_A=True, return_results=True)

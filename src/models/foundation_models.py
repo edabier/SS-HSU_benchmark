@@ -429,34 +429,48 @@ def create_fm(fm_name, Y, c=None, n_features=1, patch_size=64, use_cls=False, ex
     
     return fm, Y, new_H
 
-def reshape_Y(fm_name, new_H, Y, A):
+def reshape_Y(fm_name, Y, new_H=None, A=None):
+
     if fm_name == "OFAViT": # DOFA
+        new_H = 224
+
         if Y.shape[-1] < new_H:
             Y = F.interpolate(Y, size=(new_H,new_H))
         Y = Y[:,:,:new_H, :new_H]
         
-        if A.shape[-1] < new_H:
-            A = F.interpolate(A, size=(new_H,new_H))
-        A = A[:,:,:new_H, :new_H]
+        if A != None:
+            if A.shape[-1] < new_H:
+                A = F.interpolate(A, size=(new_H,new_H))
+            A = A[:,:,:new_H, :new_H]
 
     elif fm_name == "SpecViTBase":
         if Y.shape[-1] < new_H:
             Y = F.interpolate(Y, size=(new_H,new_H))
         Y = Y[:,:,:new_H, :new_H]
         
-        if A.shape[-1] < new_H:
-            A = F.interpolate(A, size=(new_H,new_H))
-        A = A[:,:,:new_H, :new_H]
+        if A != None:
+            if A.shape[-1] < new_H:
+                A = F.interpolate(A, size=(new_H,new_H))
+            A = A[:,:,:new_H, :new_H]
     
     else:
+        if A != None:
+            return Y, A
+        else:
+            return Y
+
+    if A != None:
         return Y, A
+    else:
+        return Y
 
-    return Y, A
-
-def extract_f(fm, Y, A, new_H, wavelengths, use_cls=False):
+def extract_f(fm, Y, new_H, wavelengths, A=None, use_cls=False):
     fm_name = fm.__class__.__name__
 
-    Y, A = reshape_Y(fm_name, new_H, Y, A)
+    if A != None:
+        Y, A = reshape_Y(fm_name, Y, new_H, A)
+    else:
+        Y = reshape_Y(fm_name, Y, new_H)
 
     if fm_name == "OFAViT": # DOFA
         features = get_dofa_features(fm, Y, wavelengths)
@@ -474,7 +488,10 @@ def extract_f(fm, Y, A, new_H, wavelengths, use_cls=False):
     else:
         return
     
-    return Y, A, features
+    if A != None:
+        return Y, A, features
+    else:
+        return Y, features
 
 def get_hypersigma_features(fm, Y, patch_size=64):
     """
@@ -771,15 +788,17 @@ class Unmixing_from_features(nn.Module):
 
         return loss, loss_sad, loss_ab, loss_tv_e, loss_tv_a, loss_mse, loss_norm_e
 
-    def freeze_decoder(self):
+    def freeze_decoder(self, normalize=False):
         """
         Normalizes the weights of the decoder and freezes it
         """
-        state_dict = self.decoder.state_dict()
-        E_hat = self.decoder.get_endmembers()
-        E_hat = utils.normalize(E_hat, is_endmember=True)
-        state_dict["decoder.weight"][:, :, 0, 0] = E_hat
-        self.decoder.load_state_dict(state_dict)
+
+        if normalize:
+            state_dict = self.decoder.state_dict()
+            E_hat = self.decoder.get_endmembers()
+            E_hat = utils.normalize(E_hat, is_endmember=True)
+            state_dict["decoder.weight"][:, :, 0, 0] = E_hat
+            self.decoder.load_state_dict(state_dict)
 
         for param in self.decoder.parameters():
             param.requires_grad = False

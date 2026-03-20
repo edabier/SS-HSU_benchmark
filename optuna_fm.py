@@ -84,7 +84,7 @@ def objective(trial):
                     Y = utils.oneD_to_2d(Y).to(dev)
                     A = utils.oneD_to_2d(A).to(dev)
                     E = E.to(dev)
-                    Y, A, features = rsfm.extract_f(fm, Y, A, new_H, wavelengths, False)
+                    Y, A, features = rsfm.extract_f(fm, Y, new_H, wavelengths, A, False)
                     E_hat, A_hat, Y_hat = model(features)
                     loss, _, _, _, _, _, _ = model.loss(Y, Y_hat, A_hat, E_hat, 1, W_ab, W_tv_e, W_tv_a, W_mse, W_e)
                     loss.backward()
@@ -97,7 +97,7 @@ def objective(trial):
 
             model.eval()
             with torch.no_grad():
-                _, A_init, features = rsfm.extract_f(fm, Y_init, A, new_H, wavelengths, False)
+                _, A_init, features = rsfm.extract_f(fm, Y_init, new_H, wavelengths, A, False)
                 E_hat1, A_hat1, _ = model(features)
 
             sad, _, mse = plots.compute_metrics_and_plot(E_hat1, A_hat1, A_init, E, normalize_E=True, normalize_A=True, return_results=True, plot_A=False, plot_E=False)

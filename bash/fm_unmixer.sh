@@ -24,7 +24,8 @@ conda activate hsu-env
 N_XP=5
 
 # Execute the Python script with specific arguments
-srun python /home/ids/edabier/HSU/SS-HSU_benchmark/fm_unmixing.py --n_xp $N_XP
+# srun python /home/ids/edabier/HSU/SS-HSU_benchmark/fm_unmixing.py --n_xp $N_XP
+srun python /home/ids/edabier/HSU/SS-HSU_benchmark/dofa_n_training.py
 
 # Retrieve and log job information
 LOG_FILE="job_tracking.log"
