@@ -165,9 +165,8 @@ def run_one_xp(n, dataset, mses, sads, mses_cnn, sads_cnn, Y_init, wavelengths, 
                     E_hat, A_hat, Y_hat = model(features)
                 
                 Yn = utils.sum_to_one(Y)
-                W_ab, W_mse, W_tv_e, W_tv_a, W_e = 0.5, 0.2, 1e-2, 1e-7, 0#0.5, 1e-4, 1e-3, 1e-7, 1e-3
-                loss, loss_sad, loss_ab, loss_tv_e, loss_tv_a, loss_mse, loss_norm_e = model.loss(Y, Y_hat, A_hat, E_hat, 1, W_ab, W_tv_e, W_tv_a, W_mse, W_e)
-
+                loss = model.loss(Y, Y_hat, A_hat, E_hat)
+                
                 loss.backward()
                 optimizer.step()
                 

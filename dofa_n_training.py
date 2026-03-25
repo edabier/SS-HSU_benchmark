@@ -89,8 +89,7 @@ def run_one_xp(i_dataset, i_train, n_train, i_xp, dataset, mse_tensor, sad_tenso
                 E_hat, A_hat, Y_hat = model(features)
                 
                 Yn = utils.sum_to_one(Y)
-                W_ab, W_mse, W_tv_e, W_tv_a, W_e = 0.6, 0.09, 3e-5, 0, 0
-                loss, loss_sad, loss_ab, loss_tv_e, loss_tv_a, loss_mse, loss_norm_e = model.loss(Y, Y_hat, A_hat, E_hat, 1, W_ab, W_tv_e, W_tv_a, W_mse, W_e)
+                loss = model.loss(Y, Y_hat, A_hat, E_hat)
 
                 loss.backward()
                 nn.utils.clip_grad_norm_(model.parameters(), max_norm=10, norm_type=1)

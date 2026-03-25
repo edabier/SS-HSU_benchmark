@@ -31,7 +31,7 @@ def plot_losses(total_loss, loss_sad, loss_ab, loss_tv, loss_mse):
     plt.tight_layout()
     plt.show()
 
-def compute_metrics_and_plot(E_hat=None, A_hat=None, A_gt=None, E_gt=None, model_name=None, normalize_E=False, normalize_A=False, return_results=False, plot_A=True, plot_E=True, hypersigma=False):
+def compute_metrics_and_plot(E_hat=None, A_hat=None, A_gt=None, E_gt=None, model_name=None, normalize_E=True, normalize_A=True, return_results=False, plot_A=True, plot_E=True, hypersigma=False):
     """
     Displays the predicted endmembers and abundances
     """

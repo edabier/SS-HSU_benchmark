@@ -43,8 +43,7 @@ def train_model(Y, fm, B, c, D, alpha, new_H, wavelengths, dev):
         
         _, features = rsfm.extract_f(fm, Y, new_H, wavelengths, use_cls=False)
         E_hat, A_hat, Y_hat = compiled_model(features)
-        W_ab, W_mse, W_tv_e, W_tv_a, W_e = 0.6, 0.09, 3e-5, 0, 0
-        loss, _, _, _, _, _, _ = compiled_model.loss(Y, Y_hat, A_hat, E_hat, 1, W_ab, W_tv_e, W_tv_a, W_mse, W_e)
+        loss = compiled_model.loss(Y, Y_hat, A_hat, E_hat)
         
         loss.backward()
         nn.utils.clip_grad_norm_(compiled_model.parameters(), max_norm=10, norm_type=1)
@@ -57,7 +56,7 @@ def train_model(Y, fm, B, c, D, alpha, new_H, wavelengths, dev):
     compiled_model.eval()
 
     with torch.no_grad():
-        _, _, features = rsfm.extract_f(fm, Y, new_H, wavelengths, use_cls=False)
+        _, features = rsfm.extract_f(fm, Y, new_H, wavelengths, use_cls=False)
         E_hat, A_hat, _ = compiled_model(features)
     
     return E_hat, A_hat
@@ -96,7 +95,7 @@ def run_one_xp(i_dataset, i_pad, pad, i_xp, mse_tensor, sad_tensor, Y_init, A_in
 
 def main(dev):
 
-    datasets = ["samson", "apex", "jasper", "urban"]
+    datasets = ["urban"] #["samson", "apex", "jasper", "urban"]
     paddings = range(6)
     n_xp = 10
 
@@ -104,7 +103,7 @@ def main(dev):
     sad_tensor = torch.zeros(len(datasets), len(paddings), n_xp)
 
     for i_dataset, dataset in enumerate(datasets):
-        data = io.loadmat(f"datasets/{dataset}.mat")
+        data = io.loadmat(f"{global_path}/SS-HSU_benchmark/datasets/{dataset}.mat")
         Y_flat = torch.tensor(data["Y"], dtype=torch.float)
         A_flat = torch.tensor(data["A"], dtype=torch.float)
         E_init = torch.tensor(data["E"], dtype=torch.float)

@@ -761,7 +761,7 @@ class Unmixing_from_features(nn.Module):
             nn.init.kaiming_normal_(m.weight.data)
 
     @staticmethod
-    def loss(Y_gt, Y_hat, A_hat, E_hat, W_sad=1, W_ab=0.35, W_tv_e=0.1, W_tv_a=0, W_mse=0, W_e=0, hypersigma=False):
+    def loss(Y_gt, Y_hat, A_hat, E_hat, W_sad=1, W_ab=0.6, W_tv_e=3e-5, W_tv_a=0, W_mse=0.6, W_e=0, hypersigma=False, return_losses=False):
         sad = losses.SADLoss()
         tv = losses.TVLoss(reduction="mean")
         mse = nn.MSELoss(reduction='sum')
@@ -786,7 +786,10 @@ class Unmixing_from_features(nn.Module):
 
         loss = loss_sad + loss_ab + loss_tv_e + loss_tv_a + loss_mse + loss_norm_e
 
-        return loss, loss_sad, loss_ab, loss_tv_e, loss_tv_a, loss_mse, loss_norm_e
+        if return_losses:
+            return loss, loss_sad, loss_ab, loss_tv_e, loss_tv_a, loss_mse, loss_norm_e
+        else:
+            return loss
 
     def freeze_decoder(self, normalize=False):
         """

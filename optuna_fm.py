@@ -86,7 +86,7 @@ def objective(trial):
                     E = E.to(dev)
                     Y, A, features = rsfm.extract_f(fm, Y, new_H, wavelengths, A, False)
                     E_hat, A_hat, Y_hat = model(features)
-                    loss, _, _, _, _, _, _ = model.loss(Y, Y_hat, A_hat, E_hat, 1, W_ab, W_tv_e, W_tv_a, W_mse, W_e)
+                    loss = model.loss(Y, Y_hat, A_hat, E_hat, 1, W_ab, W_tv_e, W_tv_a, W_mse, W_e)
                     loss.backward()
                     nn.utils.clip_grad_norm_(model.parameters(), max_norm=10, norm_type=1)
                     optimizer.step()
