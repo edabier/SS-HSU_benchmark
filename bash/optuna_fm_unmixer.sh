@@ -2,7 +2,7 @@
 #SBATCH --job-name=fm_unmix
 #SBATCH --output=%x_%j.out      # %x for job name, %j for job ID
 #SBATCH --error=%x_%j.err
-#SBATCH -p V100-32GB
+#SBATCH -p V100
 #SBATCH --nodes=1
 #SBATCH --mem=30G
 #SBATCH --exclude=node42,node43
@@ -21,7 +21,8 @@ eval "$(conda shell.bash hook)"
 conda activate hsu-env
 
 # Execute the Python script with specific arguments
-srun python /home/ids/edabier/HSU/SS-HSU_benchmark/optuna_fm.py
+# srun python /home/ids/edabier/HSU/SS-HSU_benchmark/optuna_fm.py
+srun python /home/ids/edabier/HSU/SS-HSU_benchmark/optuna_padding.py
 
 # Retrieve and log job information
 LOG_FILE="job_tracking.log"
