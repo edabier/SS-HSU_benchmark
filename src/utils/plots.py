@@ -31,7 +31,7 @@ def plot_losses(total_loss, loss_sad, loss_ab, loss_tv, loss_mse):
     plt.tight_layout()
     plt.show()
 
-def compute_metrics_and_plot(E_hat=None, A_hat=None, A_gt=None, E_gt=None, model_name=None, normalize_E=True, normalize_A=True, return_results=False, plot_A=True, plot_E=True, hypersigma=False):
+def compute_metrics_and_plot(E_hat=None, A_hat=None, A_gt=None, E_gt=None, model_name=None, normalize_E=True, normalize_A=True, return_results=False, plot_A=True, plot_E=True, hypersigma=False, cmap='viridis'):
     """
     Displays the predicted endmembers and abundances
     """
@@ -44,6 +44,9 @@ def compute_metrics_and_plot(E_hat=None, A_hat=None, A_gt=None, E_gt=None, model
     colors = ["thistle", "lavender", "mistyrose", "lightyellow", "lightblue", "lavenderblush"]
 
     if E_gt != None:
+        E_gt = E_gt.detach().cpu()
+        E_hat = E_hat.detach().cpu()
+        A_hat = A_hat.detach().cpu()
         if E_gt.dim() == 3:
             E_gt = E_gt[0]
 
@@ -51,6 +54,7 @@ def compute_metrics_and_plot(E_hat=None, A_hat=None, A_gt=None, E_gt=None, model
 
     if E_hat != None:
 
+        E_hat = E_hat.detach().cpu()
         if E_hat.dim() == 3:   
             E_hat = E_hat[0]
 
@@ -74,8 +78,8 @@ def compute_metrics_and_plot(E_hat=None, A_hat=None, A_gt=None, E_gt=None, model
 
                     sad_val = sad(E_gt[:, i], E_hat[:, i])
 
-                    ax.plot(E_gt[:, i].detach().cpu(), 'r', linewidth=1.0, label='GT')
-                    ax.plot(E_hat[:, i].detach().cpu(), 'k-', linewidth=1.0, label='predict')
+                    ax.plot(E_gt[:, i], 'r', linewidth=1.0, label='GT')
+                    ax.plot(E_hat[:, i], 'k-', linewidth=1.0, label='predict')
                     ax.set_title(f"SAD = {format(sad_val, '.2f')}", fontsize=10, pad=10, backgroundcolor=bg_colors[indices[0,i].item()], color=colors[indices[0,i].item()])
 
                     if i == 0:
@@ -105,7 +109,9 @@ def compute_metrics_and_plot(E_hat=None, A_hat=None, A_gt=None, E_gt=None, model
                 plt.suptitle(E_title)
 
     if A_gt is not None:
-
+        
+        A_gt = A_gt.detach().cpu()
+        A_hat = A_hat.detach().cpu()
         if A_hat.dim() == 4:
             A_hat = A_hat[0]
         
@@ -132,7 +138,7 @@ def compute_metrics_and_plot(E_hat=None, A_hat=None, A_gt=None, E_gt=None, model
         if plot_A:
             fig, axes = plt.subplots(2, c, figsize=(10, 5))
             for i in range(c):
-                pred = axes[0, i].imshow(A_hat[i].detach().cpu())
+                pred = axes[0, i].imshow(A_hat[i].detach().cpu(), cmap=cmap)
 
                 if hypersigma:
                     mse_val = losses.hypersigma_mse(A_gt[i].unsqueeze(0), A_hat[i].unsqueeze(0))
@@ -143,7 +149,7 @@ def compute_metrics_and_plot(E_hat=None, A_hat=None, A_gt=None, E_gt=None, model
                 axes[0, i].set_title(f"NMSE = {format(mse_val, '.2f')}", fontsize=10, pad=10, backgroundcolor=bg_colors[indices[0,i].item()], color=colors[indices[0,i].item()])
                 axes[0, i].axis('off')
 
-                gt = axes[1, i].imshow(A_gt[i].detach().cpu())
+                gt = axes[1, i].imshow(A_gt[i].detach().cpu(), cmap=cmap)
                 axes[1, i].axis('off')
 
             fig.colorbar(pred, ax=axes[0, -1], fraction=0.046, pad=0.04)
@@ -160,7 +166,7 @@ def compute_metrics_and_plot(E_hat=None, A_hat=None, A_gt=None, E_gt=None, model
             plt.suptitle(A_title)
 
     elif plot_A:
-
+        A_hat = A_hat.detach().cpu()
         if A_hat.dim() == 4:
             A_hat = A_hat[0]
 
@@ -168,7 +174,7 @@ def compute_metrics_and_plot(E_hat=None, A_hat=None, A_gt=None, E_gt=None, model
 
         fig, axes = plt.subplots(1, c, figsize=(10, 5))
         for i in range(c):
-            pred = axes[i].imshow(A_hat[i].detach().cpu())
+            pred = axes[i].imshow(A_hat[i].detach().cpu(), cmap=cmap)
             axes[i].axis('off')
         
         # Adaptative placement of the title as a function of the number of endmembers

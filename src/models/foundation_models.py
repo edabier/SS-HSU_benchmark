@@ -431,7 +431,7 @@ def create_fm(fm_name, Y, c=None, n_features=1, patch_size=64, use_cls=False, ex
 
 def reshape_Y(fm_name, Y, new_H=None, A=None):
 
-    if fm_name == "OFAViT": # DOFA
+    if fm_name == "OFAViT" or fm_name == "DOFA":
         new_H = 224
 
         if Y.shape[-1] < new_H:
@@ -442,6 +442,16 @@ def reshape_Y(fm_name, Y, new_H=None, A=None):
             if A.shape[-1] < new_H:
                 A = F.interpolate(A, size=(new_H,new_H))
             A = A[:,:,:new_H, :new_H]
+    
+    elif fm_name == "ImageEncoderViT" or fm_name == "HyperFree": #HyperFree
+        n_patches = Y.shape[2]//16
+        if n_patches%2 != 0:
+            H = (n_patches-1)*16 + 16-1
+            Y = Y[:, :, :H, :H]
+
+            if A != None:
+                print(f"reshaped A in reshape Y with H = {H}")
+                A = A[:, :, :H, :H]
 
     elif fm_name == "SpecViTBase":
         if Y.shape[-1] < new_H:

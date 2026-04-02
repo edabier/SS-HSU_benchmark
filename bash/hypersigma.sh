@@ -1,5 +1,5 @@
 #!/bin/bash -l
-#SBATCH --job-name=fm_unmixing
+#SBATCH --job-name=hypersigma
 #SBATCH --output=%x_%j.out      # %x for job name, %j for job ID
 #SBATCH --error=%x_%j.err
 #SBATCH -p V100
@@ -20,13 +20,9 @@ echo "Job started at: $(date)"
 eval "$(conda shell.bash hook)"
 conda activate hsu-env
 
-# Define variables for the job
-N_XP=5
-
 # Execute the Python script with specific arguments
-# srun python /home/ids/edabier/HSU/SS-HSU_benchmark/fm_unmixing.py --n_xp $N_XP
-# srun python /home/ids/edabier/HSU/SS-HSU_benchmark/dofa_n_training.py
-srun python /home/ids/edabier/HSU/SS-HSU_benchmark/padding_training.py
+srun python /home/ids/edabier/HSU/my_HyperSIGMA/HyperspectralUnmixing/trainval.py
+# srun python /home/ids/edabier/HSU/HyperSIGMA/HyperspectralUnmixing/trainval.py
 
 # Retrieve and log job information
 LOG_FILE="job_tracking.log"

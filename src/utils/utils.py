@@ -29,11 +29,11 @@ def order_endmembers(E_gt, E_hat, A_hat=None):
     
     E_hat_corr_norm = torch.zeros_like(E_hat)
     E_hat_corr = torch.zeros_like(E_hat)
-    indices = torch.zeros((E_hat.size()[0],E_hat.size()[2])) # Premier indice : mini-batch, deuxieme : nombre de sources
+    indices = torch.zeros((E_hat.size()[0],E_hat.size()[2]))
 
     for batch in range(E_gt.size()[0]):
-        E0 = F.normalize(E_gt[batch,:,:],p=2.0,dim=0) # Une seule matrice (plus de mini-batch)
-        E = F.normalize(E_hat[batch,:,:],p=2.0,dim=0) # Une seule matrice (plus de mini-batch)
+        E0 = F.normalize(E_gt[batch,:,:],p=2.0,dim=0)
+        E = F.normalize(E_hat[batch,:,:],p=2.0,dim=0)
         E0 = E0.to(torch.float32)   
         E = E.to(torch.float32)
         
@@ -68,37 +68,6 @@ def order_endmembers(E_gt, E_hat, A_hat=None):
         return E_hat_corr[0], A_hat_corr[0], indices
     else:
         return E_hat_corr[0], indices
-    
-def test_model(model, test_loader, wandb=False):
-    """
-    Tests the input model on the input test dataset
-    """
-    
-    if wandb:
-        run = wandb.init(
-            project=f"{model.__class__.__name__}_test",
-            config={
-                "dataset": test_loader # Check if the dataloader can access the dataset variables to get the name
-            },
-        )
-        
-    test_metrics = {"re": [], "sad": []}
-    for Y, E, A in test_loader:
-        
-        e_hat, a_hat, y_hat = model(Y)
-            
-        re, sad = compute_metrics(E, A, e_hat, a_hat)
-        test_metrics["re"].append(re)
-        test_metrics["sad"].append(sad)
-        
-        if wandb:
-            wandb.log({"re": re})
-            wandb.log({"sad": sad})
-    
-    mean_re = torch.mean(torch.tensor(test_metrics["re"]))
-    mean_sad = torch.mean(torch.tensor(test_metrics["sad"]))
-    
-    return mean_re, mean_sad
 
 def crop_patch_image(Y, patch_size, A=None):
     """
@@ -230,7 +199,6 @@ def load_dataset(dataset, path="/home/ids/edabier/HSU/SS-HSU_benchmark/datasets/
     E = torch.tensor(data['E'], dtype=dtype)
 
     return Y, E, A
-
 
 class HSI_dataset(Dataset):    
     def __init__(self, dataset, path="/home/ids/edabier/HSU/SS-HSU_benchmark/datasets/", patch_size=None, dtype=None, deeptrans=False):
