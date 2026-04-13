@@ -865,6 +865,76 @@ class Unmixing_from_features(nn.Module):
 
         return E_hat, A_hat, Y_hat
  
+class Unmixing_from_features2(nn.Module):
+    def __init__(self, D, B, c, H=224, alpha=None, n_features=1):
+        """
+        Args:
+            D (int): The embed_dim
+            B (int): The number of spectral bands in the hsi
+            c (int): The number of endmembers to extract
+            H (int): The size of the input hsi
+            alpha (int): The size of the features
+            n_features (int): The size of the list of features in the case of several extracted features
+
+        """
+        super(Unmixing_from_features2, self).__init__()
+        self.D = D
+        self.alpha = alpha
+        self.B = B
+        self.c = c
+        self.H = H
+        self.n_features = n_features
+
+        self.abundance_estimator = nn.Sequential(
+            nn.Conv2d(D, c, kernel_size=1, bias=False),
+            nn.LeakyReLU(0.02),
+            nn.BatchNorm2d(c),
+            nn.Dropout(0.2)
+        )
+
+        self.sum_to_one = Sum_to_one()
+        self.decoder = Decoder(B=B, c=c)
+
+    @staticmethod
+    def weights_init(m):
+        if type(m) == nn.Conv2d:
+            nn.init.kaiming_normal_(m.weight.data)
+
+    @staticmethod
+    def loss(Y_gt, Y_hat, A_hat, E_hat, W_sad=1, W_ab=0.6, W_tv_e=3e-5, W_tv_a=0):
+        sad = losses.SADLoss()
+        tv = losses.TVLoss(reduction="mean")
+        
+        loss_sad = W_sad * sad(Y_gt, Y_hat)
+        loss_ab = W_ab * torch.sqrt(A_hat).mean()
+
+        # TV on endmembers (sum of difference between consecutive endmembers)
+        loss_tv_e = W_tv_e * (torch.abs(E_hat[:, 1:] - E_hat[:, :-1]).sum())
+
+        # TV on abundances (sum of difference between consecutive horizontal pixels + vertical pixels)
+        loss_tv_a = W_tv_a * tv(A_hat)
+
+        loss = loss_sad + loss_ab + loss_tv_e + loss_tv_a
+
+        return loss
+
+    def get_abundances(self, features):
+        # features_up = (features_up - features_up.mean())/ (1e-8 + features_up.std())
+        A_hat = self.abundance_estimator(features)
+        A_hat = self.sum_to_one(A_hat)
+
+        return A_hat
+    
+    def get_endmembers(self):
+        return self.decoder.get_endmembers()
+    
+    def forward(self, features):
+        A_hat = self.get_abundances(features)
+        Y_hat = self.decoder(A_hat)
+        E_hat = self.decoder.get_endmembers()
+
+        return E_hat, A_hat, Y_hat
+ 
 class CNNAEU_with_decoder(nn.Module):
     def __init__(self, B, c, decoder=None, E_init=None, freeze_E=True):
         super().__init__()

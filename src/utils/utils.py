@@ -186,6 +186,7 @@ def normalize(X, is_endmember=False):
         X_norm = X/torch.max(X, dim=0).values
 
     else:
+        # X_norm = X/ X.amax(dim=(1,2), keepdim=True)
         X_norm = X/torch.norm(X)
 
     return X_norm

@@ -1,8 +1,8 @@
 #!/bin/bash -l
-#SBATCH --job-name=fm_unmixing
+#SBATCH --job-name=fm_unmix
 #SBATCH --output=%x_%j.out      # %x for job name, %j for job ID
 #SBATCH --error=%x_%j.err
-#SBATCH -p V100
+#SBATCH -p V100-32GB
 #SBATCH --nodes=1
 #SBATCH --mem=30G
 #SBATCH --exclude=node42,node43
@@ -26,7 +26,7 @@ N_XP=5
 # Execute the Python script with specific arguments
 # srun python /home/ids/edabier/HSU/SS-HSU_benchmark/fm_unmixing.py --n_xp $N_XP
 # srun python /home/ids/edabier/HSU/SS-HSU_benchmark/dofa_n_training.py
-srun python /home/ids/edabier/HSU/SS-HSU_benchmark/padding_training.py
+srun python /home/ids/edabier/HSU/SS-HSU_benchmark/padding_training_2.py
 
 # Retrieve and log job information
 LOG_FILE="job_tracking.log"

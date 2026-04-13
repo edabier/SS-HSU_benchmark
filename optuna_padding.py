@@ -6,8 +6,7 @@ import scipy.io as io
 import sys
 import optuna
 import os
-from tqdm import tqdm
-import numpy as np
+import gc
 
 global_path = "/home/ids/edabier/HSU"
 # global_path = "/home/edabier/Documents/Thèse/benchmark"
@@ -88,9 +87,12 @@ def objective(trial):
     n_rows = 2*(pad-(shift-1))+1
     epochs=200
 
-################ Testing on all datasets ################
+    ################ Testing on all datasets ################
 
     for dataset in datasets:
+        
+        print(f"Training {dataset}")
+        
         # Load data
         data = io.loadmat(f"{global_path}/SS-HSU_benchmark/datasets/{dataset}.mat")
         Y_flat = torch.tensor(data["Y"], dtype=torch.float)
@@ -113,16 +115,13 @@ def objective(trial):
         D = int(features.shape[0]/n_features)
         alpha = int(features.shape[1]**0.5)
         
-        Y_padded = F.pad(Y_init_f, pad=(pad, pad, pad, pad), mode="reflect")
-        model_list, optimizers = instantiate_models(pad, shift, Y_padded, D, alpha, new_H, B, c, dev)
+        Y_padded = F.pad(Y_init, pad=(pad, pad, pad, pad), mode="reflect")
 
-################ Running 5 xp ################
+        ################ Training models ################
 
         sads, mses = [], []
         for n in range(5):
-
-################ Training models ################
-
+            model_list, optimizers = instantiate_models(pad, shift, Y_init, D, alpha, H, B, c, dev)
             total_loss = 0
             A_hats = []
 
@@ -131,7 +130,7 @@ def objective(trial):
                 total_loss = 0
                 A_hats = []
                 
-                A_hat_padded = torch.zeros(1, c, new_H+2*pad,new_H+2*pad)
+                A_hat_padded = torch.zeros(1, c, H+2*pad, H+2*pad)
                 weights = torch.zeros_like(A_hat_padded)
                 E_hats = torch.zeros((2*pad+1)**2, B, c)
 
@@ -144,19 +143,19 @@ def objective(trial):
                         optimizer = optimizers[i_model]
                         optimizer.zero_grad()
 
-                        Y_crop = Y_padded[:, :, i:i+new_H, j:j+new_H]
+                        Y_crop = Y_padded[:, :, i:i+H, j:j+H]
                         Y_crop = Y_crop.to(dev)
-
+                        
                         _, features = rsfm.extract_f(fm, Y_crop, H, wavelengths, use_cls=False)
                         E_hat, A_hat, Y_hat = model(features)
-                        
+
                         E_hat, A_hat, _ = utils.order_endmembers(E_init, E_hat, A_hat)
                         A_hat = A_hat.unsqueeze(0)
                         A_hats.append(A_hat)
                         E_hats[i_model] = E_hat
 
-                        A_hat_padded[:, :, i:i+new_H, j:j+new_H] += A_hat
-                        weights[:, :, i:i+new_H, j:j+new_H] += 1
+                        A_hat_padded[:, :, i:i+H, j:j+H] += A_hat
+                        weights[:, :, i:i+H, j:j+H] += 1
                         
                         loss = model.loss(Y_crop, Y_hat, A_hat, E_hat)
                         total_loss += loss
@@ -179,13 +178,16 @@ def objective(trial):
                 
                 if epoch%(epochs//10)==0:
                     print(f"Current epoch: {epoch}")
+                    
+            del optimizers, total_loss, E_hat_m, A_hat_padded, E_hats, A_hats, E_hat, A_hat, weights, loss, consistency
+            torch.cuda.synchronize()
+            torch.cuda.empty_cache()
+            gc.collect()
 
-################ Testing models ################
+            ################ Testing models ################
 
-            A_init_crop = A_init[:,:new_H, :new_H]
-            model.eval()
             with torch.no_grad():
-                A_hat_padded = torch.zeros(1, c, new_H+2*pad,new_H+2*pad)
+                A_hat_padded = torch.zeros(1, c, H+2*pad,H+2*pad)
                 weights = torch.zeros_like(A_hat_padded)
                 E_hats = torch.zeros((2*pad+1)**2, B, c)
 
@@ -194,7 +196,8 @@ def objective(trial):
 
                         i_model = n_rows*(i//shift) + j//shift
                         model = model_list[i_model]
-                        Y_crop = Y_padded[:, :, i:i+new_H, j:j+new_H]
+                        model.eval()
+                        Y_crop = Y_padded[:, :, i:i+H, j:j+H]
                         Y_crop = Y_crop.to(dev)
                         _, features = rsfm.extract_f(fm, Y_crop, H, wavelengths, use_cls=False)
                         E_hat, A_hat, Y_hat = model(features)
@@ -202,21 +205,32 @@ def objective(trial):
                         E_hat, A_hat, _ = utils.order_endmembers(E_init, E_hat, A_hat)
                         A_hat = A_hat.unsqueeze(0)
                         E_hats[i_model] = E_hat
-                        A_hat_padded[:, :, i:i+new_H, j:j+new_H] += A_hat
-                        weights[:, :, i:i+new_H, j:j+new_H] += 1
+                        A_hat_padded[:, :, i:i+H, j:j+H] += A_hat
+                        weights[:, :, i:i+H, j:j+H] += 1
                 
                 A_hat_padded /= weights
                 E_hat_m = torch.mean(E_hats, dim=0) 
 
-            sad, _, mse = plots.compute_metrics_and_plot(E_hat_m, A_hat_padded[:,:,pad*2:-1-2*pad, pad*2:-1-2*pad], A_init_crop[:,pad:-1-pad, pad:-1-pad], E_init, return_results=True, plot_A=False, plot_E=False)
-            sads.append(sad.detach().cpu())
-            mses.append(mse.detach().cpu())
-
+            sad, _, mse = plots.compute_metrics_and_plot(E_hat_m, A_hat_padded[:,:,pad*2:-1-2*pad, pad*2:-1-2*pad], A_init[:, :,pad:-1-pad, pad:-1-pad], E_init, return_results=True, plot_A=False, plot_E=False)
+            # all_sads.append(sad)
+            # all_mses.append(mse)
+            sads.append(sad)
+            mses.append(mse)
+        
+            del model_list, E_hat, A_hat, E_hats, A_hat_padded, weights, E_hat_m, sad, mse
+            torch.cuda.synchronize()
+            torch.cuda.empty_cache()
+            gc.collect()
+            
         all_sads.extend(sads)
         all_mses.extend(mses)
-
-    avg_sad = np.mean(all_sads)
-    avg_mse = np.mean(all_mses)
+        del A_init, E_init, Y_init, features, alpha, D, fm, wavelengths, data, sads, mses
+        
+    avg_sad = torch.mean(torch.tensor(all_sads))
+    avg_mse = torch.mean(torch.tensor(all_mses))
+    torch.cuda.synchronize()
+    torch.cuda.empty_cache()
+    gc.collect()
     return avg_sad, avg_mse
 
 if __name__ == "__main__":
@@ -231,7 +245,7 @@ if __name__ == "__main__":
         print(f"Using device: {dev}")
 
     study = optuna.create_study(directions=["minimize", "minimize"])  # Minimize both SAD and MSE
-    study.optimize(objective, n_trials=100)
+    study.optimize(objective, n_trials=50)
 
     # Print the best trials on the Pareto front
     print("Pareto-optimal trials:")

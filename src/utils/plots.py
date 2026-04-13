@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import matplotlib.pyplot as plt
+import os
 
 import src.utils.losses as losses
 import src.utils.utils as utils
@@ -31,7 +32,7 @@ def plot_losses(total_loss, loss_sad, loss_ab, loss_tv, loss_mse):
     plt.tight_layout()
     plt.show()
 
-def compute_metrics_and_plot(E_hat=None, A_hat=None, A_gt=None, E_gt=None, model_name=None, normalize_E=True, normalize_A=True, return_results=False, plot_A=True, plot_E=True, hypersigma=False, cmap='viridis'):
+def compute_metrics_and_plot(E_hat=None, A_hat=None, A_gt=None, E_gt=None, model_name=None, normalize_E=True, normalize_A=True, return_results=False, plot_A=True, plot_E=True, hypersigma=False, cmap='viridis', save_mat=None):
     """
     Displays the predicted endmembers and abundances
     """
@@ -96,6 +97,10 @@ def compute_metrics_and_plot(E_hat=None, A_hat=None, A_gt=None, E_gt=None, model
                     E_title = f"Endmember estimation, SAD = {format(total_sad, '.3f')}"
                     
                 plt.suptitle(E_title)
+
+                if save_mat is not None:
+                    os.makedirs(save_mat, exist_ok=True)
+                    plt.savefig(f"{save_mat}/E_hat.png", bbox_inches='tight', dpi=300)
             
         else:
             if plot_E:
@@ -108,6 +113,10 @@ def compute_metrics_and_plot(E_hat=None, A_hat=None, A_gt=None, E_gt=None, model
                     plt.plot(E_hat[:, i].detach().cpu(), 'k-', linewidth=1.0, label='predict')
                 plt.suptitle(E_title)
 
+                if save_mat is not None:
+                    os.makedirs(save_mat, exist_ok=True)
+                    plt.savefig(f"{save_mat}/E_hat.png", bbox_inches='tight', dpi=300)
+
     if A_gt is not None:
         
         A_gt = A_gt.detach().cpu()
@@ -116,7 +125,7 @@ def compute_metrics_and_plot(E_hat=None, A_hat=None, A_gt=None, E_gt=None, model
             A_hat = A_hat[0]
         
         if A_gt.dim() == 4:
-                A_gt = A_gt[0]
+            A_gt = A_gt[0]
 
         if n_graph is None:
             c = A_hat.shape[0]
@@ -152,8 +161,8 @@ def compute_metrics_and_plot(E_hat=None, A_hat=None, A_gt=None, E_gt=None, model
                 gt = axes[1, i].imshow(A_gt[i].detach().cpu(), cmap=cmap)
                 axes[1, i].axis('off')
 
-            fig.colorbar(pred, ax=axes[0, -1], fraction=0.046, pad=0.04)
-            fig.colorbar(gt, ax=axes[1, -1], fraction=0.046, pad=0.04)
+                fig.colorbar(pred, ax=axes[0, i], fraction=0.046, pad=0.04)
+                fig.colorbar(gt, ax=axes[1, i], fraction=0.046, pad=0.04)
             fig.text(0.05, 0.7, 'prediction', va='center', ha='center', fontsize=12, rotation='vertical')
             fig.text(0.05, 0.4, 'gt', va='center', ha='center', fontsize=12, rotation='vertical')
             plt.subplots_adjust(left=0.1, right=0.9, top=0.5, bottom=0.1, wspace=0.1, hspace=0.5)
@@ -164,6 +173,10 @@ def compute_metrics_and_plot(E_hat=None, A_hat=None, A_gt=None, E_gt=None, model
             else:
                 A_title = f"Abundance estimation, NMSE = {format(total_mse, '.3f')}"
             plt.suptitle(A_title)
+
+            if save_mat is not None:
+                os.makedirs(save_mat, exist_ok=True)
+                plt.savefig(f"{save_mat}/A_hat.png", bbox_inches='tight', dpi=300)
 
     elif plot_A:
         A_hat = A_hat.detach().cpu()
@@ -176,14 +189,37 @@ def compute_metrics_and_plot(E_hat=None, A_hat=None, A_gt=None, E_gt=None, model
         for i in range(c):
             pred = axes[i].imshow(A_hat[i].detach().cpu(), cmap=cmap)
             axes[i].axis('off')
+            fig.colorbar(pred, ax=axes[i], fraction=0.046, pad=0.04)
         
         # Adaptative placement of the title as a function of the number of endmembers
         offset_y = -(0.1/3) * c + 0.9
         plt.suptitle("Abundance estimation", y=offset_y)
-        fig.colorbar(pred, ax=axes[-1], fraction=0.046, pad=0.04)
+
+        if save_mat is not None:
+            os.makedirs(save_mat, exist_ok=True)
+            plt.savefig(f"{save_mat}/A_hat.png", bbox_inches='tight', dpi=300)
     
     if return_results:
         return total_sad, total_sad_a, total_mse
+    
+def plot_hsi(Y, n_channels):
+    """
+    Displays n channels of the input HSI
+    Must be of shape (batch, B, H, W) or (B, H, W)
+    """
+    if Y.dim() > 3:
+        Y = Y.squeeze(0)
+
+    fig, axes = plt.subplots(1, n_channels, figsize=(20, 20))
+    B, H, W = Y.shape
+
+    for i, idx in enumerate(range(0, B, B//n_channels)):
+        im = axes[i].imshow(Y[idx].detach().cpu())
+        axes[i].set_title(f"Channel {idx} / {B}")
+        fig.colorbar(im, ax=axes[i], fraction=0.046, pad=0.04)
+        
+        axes[i].set_xticks([])
+        axes[i].set_yticks([])
 
 def compare_hsis(Y_gt, Y_hat, title=None, gt_name=None, hat_name=None, n=4):
     """
