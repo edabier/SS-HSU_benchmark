@@ -202,7 +202,7 @@ def compute_metrics_and_plot(E_hat=None, A_hat=None, A_gt=None, E_gt=None, model
     if return_results:
         return total_sad, total_sad_a, total_mse
     
-def plot_hsi(Y, n_channels):
+def plot_hsi(Y, n_channels, rgb=False, title=None):
     """
     Displays n channels of the input HSI
     Must be of shape (batch, B, H, W) or (B, H, W)
@@ -214,12 +214,19 @@ def plot_hsi(Y, n_channels):
     B, H, W = Y.shape
 
     for i, idx in enumerate(range(0, B, B//n_channels)):
-        im = axes[i].imshow(Y[idx].detach().cpu())
+        if rgb:
+            im = axes[i].imshow(Y[idx:idx+3].permute(1,2,0).detach().cpu())
+        else:
+            im = axes[i].imshow(Y[idx].detach().cpu())
+            fig.colorbar(im, ax=axes[i], fraction=0.046, pad=0.04)
         axes[i].set_title(f"Channel {idx} / {B}")
-        fig.colorbar(im, ax=axes[i], fraction=0.046, pad=0.04)
         
         axes[i].set_xticks([])
         axes[i].set_yticks([])
+    
+    if title != None:
+        plt.suptitle(title, y=0.6)
+    # plt.savefig(f"/home/edabier/Documents/Thèse/benchmark/DOFA_shift_features/{title}.png")
 
 def compare_hsis(Y_gt, Y_hat, title=None, gt_name=None, hat_name=None, n=4):
     """

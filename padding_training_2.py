@@ -82,10 +82,10 @@ def main(dev):
                     torch.cuda.synchronize()
                     torch.cuda.empty_cache()
                     gc.collect()
+        feature_map_resampled = F.grid_sample(feature_map, grid, mode='bilinear', padding_mode='reflection', align_corners=True)
 
         for epoch in range(epochs):
             optimizer.zero_grad()
-            feature_map_resampled = F.grid_sample(feature_map, grid, mode='bilinear', padding_mode='reflection', align_corners=True)
             E_hat, A_hat, Y_hat = model(feature_map_resampled)
             E_hat, A_hat, _ = utils.order_endmembers(E_init, E_hat, A_hat)
             A_hat = A_hat.unsqueeze(0)
@@ -104,7 +104,6 @@ def main(dev):
         
         model.eval()
         with torch.no_grad():
-            feature_map_resampled = F.grid_sample(feature_map, grid, mode='bilinear', padding_mode='reflection', align_corners=True)
             E_hat, A_hat, Y_hat = model(feature_map_resampled)
             E_hat, A_hat, _ = utils.order_endmembers(E_init, E_hat, A_hat)
             A_hat = A_hat.unsqueeze(0)
