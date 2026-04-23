@@ -14,9 +14,9 @@ import src.models.transformer as transformer
 import src.utils.utils as utils
 import src.utils.losses as losses
 
-# global_path = "/home/ids/edabier/HSU"
+global_path = "/home/ids/edabier/HSU"
 # global_path = "/Users/edabier/Documents/Thèse/Thèse_Télécom"
-global_path = "/home/edabier/Documents/Thèse/benchmark"
+# global_path = "/home/edabier/Documents/Thèse/benchmark"
 sys.path.append(global_path)
 
 sys.path.append(f"{global_path}/spectral_earth")
@@ -28,7 +28,7 @@ sys.path.append(f"{global_path}/IEEE_TPAMI_SpectralGPT")
 import models_mae_spectral
 
 sys.path.append(f"{global_path}/HyperFree")
-from HyperFree import build_HyperFree_vit_b, predictor
+import HyperFree.build_HyperFree as hf
 from HyperFree.modeling import image_encoder
 
 sys.path.append(f"{global_path}/DOFA")
@@ -268,7 +268,7 @@ class OFAViT(nn.Module):
         self.use_cls = use_cls
         self.extend_cls = extend_cls
 
-        self.patch_embed = Dynamic_MLP_OFA(wv_planes=128, kernel_size=patch_size, embed_dim=embed_dim)
+        self.patch_embed = Dynamic_MLP_OFA(wv_planes=wv_planes, kernel_size=patch_size, embed_dim=embed_dim)
         self.num_patches = (img_size // patch_size) ** 2
         self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
         self.pos_embed = nn.Parameter(torch.zeros(1, self.num_patches + 1, embed_dim), requires_grad=False)  # fixed sin-cos embedding
@@ -324,7 +324,7 @@ class OFAViT(nn.Module):
         x = self.forward_head(x)
         return x
 
-def create_fm(fm_name, Y, c=None, n_features=1, patch_size=64, use_cls=False, extend_cls=False, path="/home/ids/edabier/HSU"):
+def create_fm(fm_name, Y, c=None, n_features=1, patch_size=64, size="base", is_v2=False, use_cls=False, extend_cls=False, path="/home/ids/edabier/HSU"):
     batch, B, H, _ = Y.shape
     device = Y.device
 
@@ -336,25 +336,54 @@ def create_fm(fm_name, Y, c=None, n_features=1, patch_size=64, use_cls=False, ex
             new_H = 224
         Y = Y[:,:,:new_H, :new_H]
 
-        check_point = torch.load(f'{path}/DOFA/checkpoints/DOFA_ViT_base_e100.pth', map_location=device)
         if n_features == 1:
             out_indices = [11]
         elif n_features == 4:
             out_indices = [3,5,7,11]
         elif n_features == 9:
             out_indices = [i for i in range(3,12)]
-        fm = OFAViT(
-            img_size=224, patch_size=16, embed_dim=768, depth=12, num_heads=12, out_indices=out_indices, mlp_ratio=4,
-            norm_layer=partial(nn.LayerNorm, eps=1e-6), use_cls=use_cls, extend_cls=extend_cls)
-        
-        fm.load_state_dict(check_point, strict=False)
+
+        if size == "large":
+            if is_v2:
+                check_point = torch.load(f'{path}/DOFA/checkpoints/dofav2_vit_large_e150.pth', map_location=device)
+                check_model = {
+                    k[len("model."):]: v
+                    for k, v in check_point.items()
+                    if k.startswith("model.")
+                }
+                fm = OFAViT(
+                    img_size=224, patch_size=14, embed_dim=1024, depth=24, num_heads=16, out_indices=out_indices, mlp_ratio=4,
+                    norm_layer=partial(nn.LayerNorm, eps=1e-6), use_cls=use_cls, extend_cls=extend_cls)
+                fm.load_state_dict(check_point, strict=False)
+                fm.load_state_dict(check_model, strict=False)
+            else:
+                check_point = torch.load(f'{path}/DOFA/checkpoints/DOFA_ViT_large_e100.pth', map_location=device)
+                fm = OFAViT(
+                    img_size=224, patch_size=16, embed_dim=1024, depth=24, num_heads=16, out_indices=out_indices, mlp_ratio=4,
+                    norm_layer=partial(nn.LayerNorm, eps=1e-6), use_cls=use_cls, extend_cls=extend_cls)
+                fm.load_state_dict(check_point, strict=False)
+
+        elif size == "base":
+            if is_v2:
+                check_point = torch.load(f'{path}/DOFA/checkpoints/dofav2_vit_base_e150.pth', map_location=device)
+                check_model = {
+                    k[len("model."):]: v
+                    for k, v in check_point.items()
+                    if k.startswith("model.")
+                }
+                fm = OFAViT(
+                    img_size=224, patch_size=14, embed_dim=768, depth=12, num_heads=12, out_indices=out_indices, mlp_ratio=4,
+                    norm_layer=partial(nn.LayerNorm, eps=1e-6), use_cls=use_cls, extend_cls=extend_cls)
+                fm.load_state_dict(check_point, strict=False)
+                fm.load_state_dict(check_model, strict=False)
+            else:
+                check_point = torch.load(f'{path}/DOFA/checkpoints/DOFA_ViT_base_e100.pth', map_location=device)
+                fm = OFAViT(
+                    img_size=224, patch_size=16, embed_dim=768, depth=12, num_heads=12, out_indices=out_indices, mlp_ratio=4,
+                    norm_layer=partial(nn.LayerNorm, eps=1e-6), use_cls=use_cls, extend_cls=extend_cls)
+                fm.load_state_dict(check_point, strict=False)
 
     elif fm_name == "HyperFree":
-        # n_patches = H//patch_size
-        # if n_patches%2 != 0:
-        #     H = (n_patches-1)*patch_size + patch_size-1
-        # new_H = H
-        # Y = Y[:, :, :new_H, :new_H]
         if H < 1024:
             Y = F.interpolate(Y, size=(1024,1024))
             new_H = 1024
@@ -362,26 +391,41 @@ def create_fm(fm_name, Y, c=None, n_features=1, patch_size=64, use_cls=False, ex
             new_H = 1024
         Y = Y[:,:,:new_H, :new_H]
 
-        checkpoint = torch.load(f"{path}/HyperFree/data/HyperFree-b.pth", map_location=device)
-        check_sd = {
-            k[len("image_encoder."):]: v
-            for k, v in checkpoint.items()
-            if k.startswith("image_encoder.")
-        }
-        
-        # fm = image_encoder.ImageEncoderViT(depth=12, embed_dim=768,
-        #         img_size=new_H, mlp_ratio=4, norm_layer=partial(torch.nn.LayerNorm, eps=1e-6),
-        #         num_heads=12, patch_size=patch_size, qkv_bias=True,
-        #         use_rel_pos=True, global_attn_indexes=[5, 8, 11],
-        #         merge_indexs = [3, 12], window_size=14, out_chans=256)
+        if size == "base":
+            # checkpoint = torch.load(f"{path}/HyperFree/data/HyperFree-b.pth", map_location=device)
+            checkpoint_path = f"{global_path}/HyperFree/data/HyperFree-b.pth"
+            fm = image_encoder.ImageEncoderViT(depth=12, embed_dim=768,
+                    img_size=new_H, mlp_ratio=4, norm_layer=partial(torch.nn.LayerNorm, eps=1e-6),
+                    num_heads=12, patch_size=patch_size, qkv_bias=True,
+                    use_rel_pos=True, global_attn_indexes=[2, 5, 8, 11],
+                    merge_indexs = [3, 12], window_size=14, out_chans=256)
 
-        fm = image_encoder.ImageEncoderViT(depth=12, embed_dim=768,
-                img_size=new_H, mlp_ratio=4, norm_layer=partial(torch.nn.LayerNorm, eps=1e-6),
-                num_heads=12, patch_size=patch_size, qkv_bias=True,
-                use_rel_pos=True, global_attn_indexes=[2, 5, 8, 11],
-                merge_indexs = [3, 12], window_size=14, out_chans=256)
+        elif size == "large":
+            # checkpoint = torch.load(f"{global_path}/HyperFree/data/HyperFree-l.pth", map_location=dev)
+            checkpoint_path = f"{global_path}/HyperFree/data/HyperFree-l.pth"
+            fm = image_encoder.ImageEncoderViT(depth=12, embed_dim=1024,
+                    img_size=1024, mlp_ratio=4, norm_layer=partial(torch.nn.LayerNorm, eps=1e-6),
+                    num_heads=16, patch_size=16, qkv_bias=True,
+                    use_rel_pos=True, global_attn_indexes=[5, 11, 17, 23],
+                    merge_indexs = [6, 24], window_size=14, out_chans=256)
+
+        elif size == "huge":
+            # checkpoint = torch.load(f"{global_path}/HyperFree/data/HyperFree-h.pth", map_location=dev)
+            checkpoint_path = f"{global_path}/HyperFree/data/HyperFree-h.pth"
+            fm = image_encoder.ImageEncoderViT(depth=12, embed_dim=1280,
+                    img_size=1024, mlp_ratio=4, norm_layer=partial(torch.nn.LayerNorm, eps=1e-6),
+                    num_heads=16, patch_size=16, qkv_bias=True,
+                    use_rel_pos=True, global_attn_indexes=[7, 15, 23, 31],
+                    merge_indexs = [8, 32], window_size=14, out_chans=256)
+
+        # check_sd = {
+        #     k[len("image_encoder."):]: v
+        #     for k, v in checkpoint.items()
+        #     if k.startswith("image_encoder.")
+        # }
         
-        fm.load_state_dict(check_sd, strict=False)
+        # fm.load_state_dict(check_sd, strict=False)
+        fm = hf.load_and_resize_params(fm, checkpoint_path)
 
     elif fm_name == "HyperSIGMA":
         new_H = H
@@ -448,7 +492,7 @@ def create_fm(fm_name, Y, c=None, n_features=1, patch_size=64, use_cls=False, ex
     
     return fm, Y, new_H
 
-def reshape_Y(fm_name, Y, new_H=None, A=None, patch=16):
+def reshape_Y(fm_name, Y, new_H=None, A=None):
 
     if fm_name == "OFAViT" or fm_name == "DOFA":
         new_H = 224
@@ -462,15 +506,7 @@ def reshape_Y(fm_name, Y, new_H=None, A=None, patch=16):
                 A = F.interpolate(A, size=(new_H,new_H))
             A = A[:,:,:new_H, :new_H]
     
-    elif fm_name == "ImageEncoderViT" or fm_name == "HyperFree": #HyperFree
-        # n_patches = Y.shape[2]//patch
-        # if n_patches%2 != 0:
-        #     H = (n_patches-1)*patch + patch-1
-        #     Y = Y[:, :, :H, :H]
-
-        #     if A != None:
-        #         A = A[:, :, :H, :H]
-        new_H = 1024
+    elif fm_name == "ImageEncoderViT" or fm_name == "HyperFree":
 
         if Y.shape[-1] < new_H:
             Y = F.interpolate(Y, size=(new_H,new_H))
@@ -502,13 +538,13 @@ def reshape_Y(fm_name, Y, new_H=None, A=None, patch=16):
     else:
         return Y
 
-def extract_f(fm, Y, new_H, wavelengths, A=None, use_cls=False, patch=16):
+def extract_f(fm, Y, new_H, wavelengths, A=None, use_cls=False):
     fm_name = fm.__class__.__name__
     
     if A != None:
-        Y, A = reshape_Y(fm_name, Y, new_H, A, patch=patch)
+        Y, A = reshape_Y(fm_name, Y, new_H, A)
     else:
-        Y = reshape_Y(fm_name, Y, new_H, patch=patch)
+        Y = reshape_Y(fm_name, Y, new_H)
 
     if fm_name == "OFAViT": # DOFA
         features = get_dofa_features(fm, Y, wavelengths)
@@ -550,73 +586,6 @@ def get_hypersigma_features(fm, Y, patch_size=64):
 
     return features
 
-def unmix_full_image_hypersigma(Y, unmixer, fm, c, patch_size=64, use_bn=True):
-
-    batch, B, H, W = Y.shape
-
-    pad_h = (patch_size - H % patch_size) % patch_size
-    pad_w = (patch_size - W % patch_size) % patch_size
-
-    Y_pad = F.pad(Y, (0, pad_w, 0, pad_h), mode="reflect")
-    _, _, Hp, Wp = Y_pad.shape
-
-    # extract patches (batch, B*p*p, N), N = number of patches per image
-    patches = F.unfold(
-        Y_pad,
-        kernel_size=patch_size,
-        stride=patch_size
-    )
-
-    N = patches.shape[-1]
-
-    # reshape to (batch*N, B, p, p)
-    patches = patches.transpose(1, 2)
-    patches = patches.reshape(batch * N, B, patch_size, patch_size)
-
-    # extract all patches' features in parallel (batch)
-    features = get_hypersigma_features(
-        fm, patches, patch_size=patch_size
-    )
-
-    # unmix all patches at once
-    noise = torch.rand_like(features)
-    if use_bn:
-        _, A_hat, Y_hat = unmixer(features) # A_hat: (batch*N, c, p, p), Y_hat: (batch*N, B, p, p)
-    
-    else:
-        _, A_hat, Y_hat = unmixer.forward_nobn(features)
-
-    # reshape back
-    A_hat = A_hat.reshape(batch, N, c, patch_size, patch_size)
-    Y_hat = Y_hat.reshape(batch, N, B, patch_size, patch_size)
-
-    # reorder to (batch, c*p*p, N)
-    A_hat = A_hat.permute(0, 2, 3, 4, 1).reshape(batch, c * patch_size * patch_size, N)
-    Y_hat = Y_hat.permute(0, 2, 3, 4, 1).reshape(batch, B * patch_size * patch_size, N)
-
-    # fold back
-    A_full = F.fold(
-        A_hat,
-        output_size=(Hp, Wp),
-        kernel_size=patch_size,
-        stride=patch_size
-    )
-
-    Y_full = F.fold(
-        Y_hat,
-        output_size=(Hp, Wp),
-        kernel_size=patch_size,
-        stride=patch_size
-    )
-
-    # crop back
-    A_full = A_full[:, :, :H, :W]
-    Y_full = Y_full[:, :, :H, :W]
-
-    E_hat = unmixer.get_endmembers()
-
-    return E_hat, A_full, Y_full
-
 def get_specvit_features(fm, Y, use_cls=False):
     features = fm(Y)
 
@@ -646,10 +615,8 @@ def get_hyperfree_features(fm, Y, wavelengths, GSD=torch.tensor([1.0])):
         GSD = GSD / ratio
         GSD = torch.tensor([GSD])
     
-    n_patches = Y.shape[2]//fm.patch_size
-    if n_patches%2 != 0:
-        H = (n_patches-1)*fm.patch_size + fm.patch_size-1
-        Y = Y[:, :, :H, :H]
+    if Y.shape[-1] != 1024:
+        Y = reshape_Y("HyperFree", Y)
 
     features = fm(Y, input_wavelength=wavelengths, GSD=GSD, test_mode=True)[-1]
     features = features.reshape(256, features.shape[2]**2).squeeze(0)

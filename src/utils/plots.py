@@ -212,17 +212,20 @@ def plot_hsi(Y, n_channels, rgb=False, title=None):
 
     fig, axes = plt.subplots(1, n_channels, figsize=(20, 20))
     B, H, W = Y.shape
+    step = (B - 1) / (n_channels - 1)
 
-    for i, idx in enumerate(range(0, B, B//n_channels)):
+    for k, idx in enumerate(range(n_channels)):
+        i = int(k*step)
+
         if rgb:
-            im = axes[i].imshow(Y[idx:idx+3].permute(1,2,0).detach().cpu())
+            im = axes[idx].imshow(Y[i:i+3].permute(1,2,0).detach().cpu())
         else:
-            im = axes[i].imshow(Y[idx].detach().cpu())
-            fig.colorbar(im, ax=axes[i], fraction=0.046, pad=0.04)
-        axes[i].set_title(f"Channel {idx} / {B}")
+            im = axes[idx].imshow(Y[i].detach().cpu())
+            fig.colorbar(im, ax=axes[idx], fraction=0.046, pad=0.04)
+        axes[idx].set_title(f"Channel {i} / {B}")
         
-        axes[i].set_xticks([])
-        axes[i].set_yticks([])
+        axes[idx].set_xticks([])
+        axes[idx].set_yticks([])
     
     if title != None:
         plt.suptitle(title, y=0.6)
