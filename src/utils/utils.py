@@ -174,7 +174,7 @@ def sum_to_one(Y, is_endmember=False):
 
     return Yn
 
-def normalize(X, is_endmember=False):
+def normalize(X, is_endmember=False, abundance_per_channel=False):
     """
     Normalizes batched tensors
 
@@ -186,8 +186,10 @@ def normalize(X, is_endmember=False):
         X_norm = X/torch.max(X, dim=0).values
 
     else:
-        # X_norm = X/ X.amax(dim=(1,2), keepdim=True)
-        X_norm = X/torch.norm(X)
+        if abundance_per_channel:
+            X_norm = X/ X.amax(dim=(1,2), keepdim=True)
+        else:
+            X_norm = X/torch.norm(X)
 
     return X_norm
 
@@ -207,7 +209,7 @@ class HSI_dataset(Dataset):
         self.dataset_name = dataset
         
         if dtype is None:
-            dtype = torch.float32
+            dtype = torch.float
 
         data_path = path + dataset + ".mat"
         data = io.loadmat(data_path)

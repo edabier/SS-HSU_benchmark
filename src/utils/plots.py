@@ -202,30 +202,47 @@ def compute_metrics_and_plot(E_hat=None, A_hat=None, A_gt=None, E_gt=None, model
     if return_results:
         return total_sad, total_sad_a, total_mse
     
-def plot_hsi(Y, n_channels, rgb=False, title=None):
+def plot_hsi(Y, n_channels=4, rgb=False, title=None, channels=None):
     """
     Displays n channels of the input HSI
     Must be of shape (batch, B, H, W) or (B, H, W)
     """
     if Y.dim() > 3:
         Y = Y.squeeze(0)
-
-    fig, axes = plt.subplots(1, n_channels, figsize=(20, 20))
     B, H, W = Y.shape
-    step = (B - 1) / (n_channels - 1)
 
-    for k, idx in enumerate(range(n_channels)):
-        i = int(k*step)
+    if channels != None:
+        fig, axes = plt.subplots(1, len(channels), figsize=(20,20))
 
-        if rgb:
-            im = axes[idx].imshow(Y[i:i+3].permute(1,2,0).detach().cpu())
-        else:
-            im = axes[idx].imshow(Y[i].detach().cpu())
-            fig.colorbar(im, ax=axes[idx], fraction=0.046, pad=0.04)
-        axes[idx].set_title(f"Channel {i} / {B}")
-        
-        axes[idx].set_xticks([])
-        axes[idx].set_yticks([])
+        for idx, i in enumerate(channels):
+
+            if rgb:
+                assert i+3 <= B, "Can't display 3 channels if selected channel is the final channel"
+                im = axes[idx].imshow(Y[i:i+3].permute(1,2,0).detach().cpu())
+            else:
+                im = axes[idx].imshow(Y[i].detach().cpu())
+                fig.colorbar(im, ax=axes[idx], fraction=0.046, pad=0.04)
+            axes[idx].set_title(f"Channel {i} / {B}")
+            
+            axes[idx].set_xticks([])
+            axes[idx].set_yticks([])
+
+    else:
+        fig, axes = plt.subplots(1, n_channels, figsize=(20, 20))
+        step = (B - 1) / (n_channels - 1)
+
+        for k, idx in enumerate(range(n_channels)):
+            i = int(k*step)
+
+            if rgb:
+                im = axes[idx].imshow(Y[i:i+3].permute(1,2,0).detach().cpu())
+            else:
+                im = axes[idx].imshow(Y[i].detach().cpu())
+                fig.colorbar(im, ax=axes[idx], fraction=0.046, pad=0.04)
+            axes[idx].set_title(f"Channel {i} / {B}")
+            
+            axes[idx].set_xticks([])
+            axes[idx].set_yticks([])
     
     if title != None:
         plt.suptitle(title, y=0.6)

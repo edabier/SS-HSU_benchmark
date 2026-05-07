@@ -19,6 +19,9 @@ global_path = "/home/ids/edabier/HSU"
 # global_path = "/home/edabier/Documents/Thèse/benchmark"
 sys.path.append(global_path)
 
+sys.path.append(f"{global_path}/SpecAware")
+from SpecAware.example import models_SpecAware_encoder
+
 sys.path.append(f"{global_path}/spectral_earth")
 from spectral_earth.src.backbones import spec_vit
 from spectral_earth.src.backbones import spec_resnet
@@ -43,8 +46,6 @@ if torch.cuda.is_available():
 else:
     print(f"{torch.cuda.is_available()}")
     dev = "cpu"
-
-MODELS = ["SpectralEarth", "SpectralGPT", "DOFA", "HyperFree", "HyperSL", "HyperSIGMA"]
 
 class HyperSIGMA_Unmix(torch.nn.Module):
     def __init__(self, patch_size, channels, seg_patches, NUM_TOKENS, embed_dim, num_em, scale):
@@ -157,6 +158,7 @@ class HyperSIGMA_Unmix(torch.nn.Module):
             nn.Dropout(0.2),
             nn.Conv2d(NUM_TOKENS*2, NUM_TOKENS, kernel_size=(1, 1)) 
         )
+
         self.conv5 = nn.Sequential(
             nn.Conv2d(NUM_TOKENS, num_em, kernel_size=1),
             nn.LeakyReLU(0.02),
@@ -217,6 +219,12 @@ class HyperSIGMA_Unmix(torch.nn.Module):
         for i in range(4):
             ss_feature.append((1 + spec_weights[i]) * img_fea[i])
         return ss_feature
+
+    def forward_features(self, Y):
+        H, W = Y.shape[2], Y.shape[3]
+        features = self.forward_fusion(Y)
+        features = features[-1][0]
+        return features
 
     def getAbundances(self, x):
         H, W = x.shape[2], x.shape[3]
@@ -324,7 +332,7 @@ class OFAViT(nn.Module):
         x = self.forward_head(x)
         return x
 
-def create_fm(fm_name, Y, c=None, n_features=1, patch_size=64, size="base", is_v2=False, use_cls=False, extend_cls=False, path="/home/ids/edabier/HSU"):
+def create_fm(fm_name, Y, c=None, n_features=1, size="base", version="v2", use_cls=False, extend_cls=False, path="/home/ids/edabier/HSU"):
     batch, B, H, _ = Y.shape
     device = Y.device
 
@@ -337,14 +345,17 @@ def create_fm(fm_name, Y, c=None, n_features=1, patch_size=64, size="base", is_v
         Y = Y[:,:,:new_H, :new_H]
 
         if n_features == 1:
-            out_indices = [11]
+            if size == "base":
+                out_indices = [11]
+            elif size == "large":
+                out_indices = [23]
         elif n_features == 4:
             out_indices = [3,5,7,11]
         elif n_features == 9:
             out_indices = [i for i in range(3,12)]
 
         if size == "large":
-            if is_v2:
+            if version == "v2":
                 check_point = torch.load(f'{path}/DOFA/checkpoints/dofav2_vit_large_e150.pth', map_location=device)
                 check_model = {
                     k[len("model."):]: v
@@ -364,7 +375,7 @@ def create_fm(fm_name, Y, c=None, n_features=1, patch_size=64, size="base", is_v
                 fm.load_state_dict(check_point, strict=False)
 
         elif size == "base":
-            if is_v2:
+            if version == "v2":
                 check_point = torch.load(f'{path}/DOFA/checkpoints/dofav2_vit_base_e150.pth', map_location=device)
                 check_model = {
                     k[len("model."):]: v
@@ -392,16 +403,14 @@ def create_fm(fm_name, Y, c=None, n_features=1, patch_size=64, size="base", is_v
         Y = Y[:,:,:new_H, :new_H]
 
         if size == "base":
-            # checkpoint = torch.load(f"{path}/HyperFree/data/HyperFree-b.pth", map_location=device)
             checkpoint_path = f"{global_path}/HyperFree/data/HyperFree-b.pth"
             fm = image_encoder.ImageEncoderViT(depth=12, embed_dim=768,
                     img_size=new_H, mlp_ratio=4, norm_layer=partial(torch.nn.LayerNorm, eps=1e-6),
-                    num_heads=12, patch_size=patch_size, qkv_bias=True,
+                    num_heads=12, patch_size=16, qkv_bias=True,
                     use_rel_pos=True, global_attn_indexes=[2, 5, 8, 11],
                     merge_indexs = [3, 12], window_size=14, out_chans=256)
 
         elif size == "large":
-            # checkpoint = torch.load(f"{global_path}/HyperFree/data/HyperFree-l.pth", map_location=dev)
             checkpoint_path = f"{global_path}/HyperFree/data/HyperFree-l.pth"
             fm = image_encoder.ImageEncoderViT(depth=12, embed_dim=1024,
                     img_size=1024, mlp_ratio=4, norm_layer=partial(torch.nn.LayerNorm, eps=1e-6),
@@ -410,7 +419,6 @@ def create_fm(fm_name, Y, c=None, n_features=1, patch_size=64, size="base", is_v
                     merge_indexs = [6, 24], window_size=14, out_chans=256)
 
         elif size == "huge":
-            # checkpoint = torch.load(f"{global_path}/HyperFree/data/HyperFree-h.pth", map_location=dev)
             checkpoint_path = f"{global_path}/HyperFree/data/HyperFree-h.pth"
             fm = image_encoder.ImageEncoderViT(depth=12, embed_dim=1280,
                     img_size=1024, mlp_ratio=4, norm_layer=partial(torch.nn.LayerNorm, eps=1e-6),
@@ -418,19 +426,31 @@ def create_fm(fm_name, Y, c=None, n_features=1, patch_size=64, size="base", is_v
                     use_rel_pos=True, global_attn_indexes=[7, 15, 23, 31],
                     merge_indexs = [8, 32], window_size=14, out_chans=256)
 
-        # check_sd = {
-        #     k[len("image_encoder."):]: v
-        #     for k, v in checkpoint.items()
-        #     if k.startswith("image_encoder.")
-        # }
-        
-        # fm.load_state_dict(check_sd, strict=False)
         fm = hf.load_and_resize_params(fm, checkpoint_path)
+
+    elif fm_name == "SpecAware":
+        new_H = 224
+        if H < new_H:
+            Y = F.interpolate(Y, size=(new_H, new_H))
+        Y = Y[:,:,:new_H, :new_H]
+
+        if n_features == 1:
+            out_indices = [11]
+        elif n_features == 4:
+            out_indices = [3,5,7,11]
+        elif n_features == 9:
+            out_indices = [i for i in range(3,12)]
+            
+        fm = models_SpecAware_encoder.MaskedHSIAutoencoderViT(embed_dim=768, patch_size=8,
+                                    depth=12, num_heads=12, mlp_ratio=4, out_indices=out_indices,
+                                    norm_layer=partial(nn.LayerNorm, eps=1e-6))
+        checkpoint = torch.load(f"{global_path}/SpecAware/SpecAware_Base_model.pth")
+        fm.load_state_dict(checkpoint)
 
     elif fm_name == "HyperSIGMA":
         new_H = H
 
-        embed_dim, seg_patches, NUM_TOKENS, scale = 768, 2, 64, 1
+        embed_dim, seg_patches, NUM_TOKENS, scale, patch_size = 768, 2, 64, 1, 64
         fm = HyperSIGMA_Unmix(patch_size=patch_size, channels=B, seg_patches=seg_patches, NUM_TOKENS=NUM_TOKENS, embed_dim=embed_dim, num_em=c, scale=scale)
 
         spat_path = f"{path}/HyperSIGMA/HyperspectralUnmixing/data/spat-vit-base-ultra-checkpoint-1599.pth"
@@ -558,7 +578,13 @@ def extract_f(fm, Y, new_H, wavelengths, A=None, use_cls=False):
 
         features = get_specvit_features(fm, Y, use_cls)
         noise = torch.rand_like(features)
+
+    elif fm_name == "MaskedHSIAutoencoderViT":# SpecAware
+        features, _ = fm.forward(Y, wavelength=torch.tensor(wavelengths), fwhm=torch.tensor([1]))
     
+    elif fm_name == "HyperSIGMA_Unmix":
+        features = fm.forward_features(Y)
+
     else:
         return
     
@@ -656,6 +682,7 @@ class Sum_to_one(nn.Module):
         super(Sum_to_one, self).__init__()
         self.scale = scale
     def forward(self, x):
+        # print(x.max())
         x = F.softmax(self.scale * x, dim=1)
         return x
 
@@ -766,10 +793,12 @@ class Unmixing_from_features(nn.Module):
             nn.init.kaiming_normal_(m.weight.data)
 
     @staticmethod
-    def loss(Y_gt, Y_hat, A_hat, E_hat, W_sad=1, W_ab=0.6, W_tv_e=3e-5, W_tv_a=0, W_mse=0.6, W_e=0, hypersigma=False, return_losses=False):
+    def loss(Y_gt, Y_hat, A_hat, E_hat, features_hr, features_lr, W_sad=1, W_ab=0.6, W_tv_e=3e-5, W_tv_a=0, W_mse=0.09, W_e=0, W_feat=0, W_tv_feat=0, hypersigma=False, return_losses=False):
         sad = losses.SADLoss()
         tv = losses.TVLoss(reduction="mean")
         mse = nn.MSELoss(reduction='sum')
+        l1 = nn.L1Loss()
+        downsample = nn.AdaptiveAvgPool2d(features_lr[0].shape)
         
         loss_sad = W_sad * sad(Y_gt, Y_hat)
         loss_ab = W_ab * torch.sqrt(A_hat).mean()
@@ -789,7 +818,12 @@ class Unmixing_from_features(nn.Module):
         # TV on abundances (sum of difference between consecutive horizontal pixels + vertical pixels)
         loss_tv_a = W_tv_a * tv(A_hat)
 
-        loss = loss_sad + loss_ab + loss_tv_e + loss_tv_a + loss_mse + loss_norm_e
+        features_down = downsample(features_hr)
+        loss_features = W_feat * l1(features_down, features_lr)
+        
+        loss_tv_feat = W_tv_feat * tv(features_hr.unsqueeze(0))
+
+        loss = loss_sad + loss_ab + loss_tv_e + loss_tv_a + loss_mse + loss_norm_e + loss_features + loss_tv_feat
 
         if return_losses:
             return loss, loss_sad, loss_ab, loss_tv_e, loss_tv_a, loss_mse, loss_norm_e
@@ -861,7 +895,7 @@ class Unmixing_from_features(nn.Module):
         return E_hat, A_hat, Y_hat
  
 class Unmixing_from_features2(nn.Module):
-    def __init__(self, D, B, c, H=224, alpha=None, n_features=1):
+    def __init__(self, D, B, c, H=224, n_features=1):
         """
         Args:
             D (int): The embed_dim
@@ -874,7 +908,6 @@ class Unmixing_from_features2(nn.Module):
         """
         super(Unmixing_from_features2, self).__init__()
         self.D = D
-        self.alpha = alpha
         self.B = B
         self.c = c
         self.H = H
@@ -925,6 +958,71 @@ class Unmixing_from_features2(nn.Module):
     
     def forward(self, features):
         A_hat = self.get_abundances(features)
+        Y_hat = self.decoder(A_hat)
+        E_hat = self.decoder.get_endmembers()
+
+        return E_hat, A_hat, Y_hat
+ 
+class Unmixing_from_features3(nn.Module):
+    def __init__(self, B, c, H=224):
+        """
+        Args:
+            B (int): The number of spectral bands in the hsi
+            c (int): The number of endmembers to extract
+            H (int): The size of the input hsi
+
+        """
+        super(Unmixing_from_features3, self).__init__()
+        self.B = B
+        self.c = c
+        self.H = H
+
+        self.abundance_estimator = nn.Sequential(
+            nn.Conv2d(B, c, kernel_size=1, bias=False),
+            nn.LeakyReLU(0.02),
+            nn.BatchNorm2d(c),
+            nn.Dropout(0.2)
+        )
+
+        self.sum_to_one = Sum_to_one()
+        self.decoder = Decoder(B=B, c=c)
+
+    @staticmethod
+    def weights_init(m):
+        if type(m) == nn.Conv2d:
+            nn.init.kaiming_normal_(m.weight.data, mode='fan_in', nonlinearity='leaky_relu')
+
+    @staticmethod
+    def loss(Y_gt, Y_hat, A_hat, E_hat, W_sad=1, W_ab=0.6, W_tv_e=3e-5, W_mse=0.6):
+        sad = losses.SADLoss()
+        tv = losses.TVLoss(reduction="mean")
+        mse = nn.MSELoss(reduction='sum')
+        
+        loss_sad = W_sad * sad(Y_gt, Y_hat)
+        loss_ab = W_ab * torch.sqrt(A_hat).mean()
+
+        # TV on endmembers (sum of difference between consecutive endmembers)
+        loss_tv_e = W_tv_e * (torch.abs(E_hat[:, 1:] - E_hat[:, :-1]).sum())
+
+        loss_mse = W_mse * mse(Y_gt, Y_hat)/(torch.norm(Y_gt)**2)
+
+        loss = loss_sad + loss_ab + loss_tv_e + loss_mse
+
+        return loss, loss_sad, loss_ab, loss_tv_e, loss_mse
+
+    def get_abundances(self, Y):
+
+        A_hat = self.abundance_estimator(Y)
+
+        A_hat = self.sum_to_one(A_hat)
+
+        return A_hat
+    
+    def get_endmembers(self):
+        return self.decoder.get_endmembers()
+    
+    def forward(self, Y):
+        A_hat = self.get_abundances(Y)
         Y_hat = self.decoder(A_hat)
         E_hat = self.decoder.get_endmembers()
 

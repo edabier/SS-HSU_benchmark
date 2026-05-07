@@ -229,7 +229,7 @@ def run_one_xp(n, dataset, mses, sads, mses_cnn, sads_cnn, Y_init, wavelengths, 
 def main(args, dev):
     n_xp = args.n_xp
 
-    datasets = ["samson", "urban"]#"jasper", "apex", 
+    datasets = ["samson", "urban""jasper", "apex"]
 
     # shape (n_datasets, n_models, n_xp)
     total_mses = torch.zeros(4, 4, n_xp)

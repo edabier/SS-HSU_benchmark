@@ -1,6 +1,6 @@
 #!/bin/bash -l
-#SBATCH --job-name=fm_unmix
-#SBATCH --output=%x_%j.out      # %x for job name, %j for job ID
+#SBATCH --job-name=dofa_unmix
+# SBATCH --output=%x_%j.out      # %x for job name, %j for job ID
 #SBATCH --error=%x_%j.err
 #SBATCH -p V100-32GB
 #SBATCH --nodes=1
@@ -18,15 +18,20 @@ echo "Job started at: $(date)"
 
 # Activate the environment
 eval "$(conda shell.bash hook)"
-conda activate hsu-env
+conda activate hsu
 
 # Define variables for the job
-N_XP=5
+N_XP=10
+N_TRAIN=15
+VERSION="v2"
+SIZE="large"
 
 # Execute the Python script with specific arguments
 # srun python /home/ids/edabier/HSU/SS-HSU_benchmark/fm_unmixing.py --n_xp $N_XP
 # srun python /home/ids/edabier/HSU/SS-HSU_benchmark/dofa_n_training.py
-srun python /home/ids/edabier/HSU/SS-HSU_benchmark/padding_training_2.py
+# srun python /home/ids/edabier/HSU/SS-HSU_benchmark/padding_training_2.py
+srun python /home/ids/edabier/HSU/SS-HSU_benchmark/dofa_15_training.py --n_xp $N_XP --n_train $N_TRAIN --version $VERSION --size $SIZE
+# srun python /home/ids/edabier/HSU/SS-HSU_benchmark/dofa_shift_15_training.py --n_xp $N_XP --n_train $N_TRAIN --version $VERSION --size $SIZE
 
 # Retrieve and log job information
 LOG_FILE="job_tracking.log"
