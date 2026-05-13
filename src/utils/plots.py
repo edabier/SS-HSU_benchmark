@@ -51,7 +51,8 @@ def compute_metrics_and_plot(E_hat=None, A_hat=None, A_gt=None, E_gt=None, model
         if E_gt.dim() == 3:
             E_gt = E_gt[0]
 
-        E_hat, A_hat, indices = utils.order_endmembers(E_gt, E_hat, A_hat)
+        E_hat, A_hat, indices = utils.order_endmembers(E_gt.T, E_hat.T , A_hat)
+        E_hat = E_hat.T
 
     if E_hat != None:
 
@@ -81,7 +82,7 @@ def compute_metrics_and_plot(E_hat=None, A_hat=None, A_gt=None, E_gt=None, model
 
                     ax.plot(E_gt[:, i], 'r', linewidth=1.0, label='GT')
                     ax.plot(E_hat[:, i], 'k-', linewidth=1.0, label='predict')
-                    ax.set_title(f"SAD = {format(sad_val, '.2f')}", fontsize=10, pad=10, backgroundcolor=bg_colors[indices[0,i].item()], color=colors[indices[0,i].item()])
+                    ax.set_title(f"SAD = {format(sad_val, '.2f')}", fontsize=10, pad=10, backgroundcolor=bg_colors[indices[i].item()], color=colors[indices[i].item()])
 
                     if i == 0:
                         ax.legend() 
@@ -155,7 +156,7 @@ def compute_metrics_and_plot(E_hat=None, A_hat=None, A_gt=None, E_gt=None, model
                 else:
                     mse_val = mse(A_gt[i], A_hat[i])/(torch.norm(A_gt[i])**2)
 
-                axes[0, i].set_title(f"NMSE = {format(mse_val, '.2f')}", fontsize=10, pad=10, backgroundcolor=bg_colors[indices[0,i].item()], color=colors[indices[0,i].item()])
+                axes[0, i].set_title(f"NMSE = {format(mse_val, '.2f')}", fontsize=10, pad=10, backgroundcolor=bg_colors[indices[i].item()], color=colors[indices[i].item()])
                 axes[0, i].axis('off')
 
                 gt = axes[1, i].imshow(A_gt[i].detach().cpu(), cmap=cmap)
@@ -202,7 +203,7 @@ def compute_metrics_and_plot(E_hat=None, A_hat=None, A_gt=None, E_gt=None, model
     if return_results:
         return total_sad, total_sad_a, total_mse
     
-def plot_hsi(Y, n_channels=4, rgb=False, title=None, channels=None):
+def plot_hsi(Y, n_channels=4, rgb=False, title=None, channels=None, cmap="viridis"):
     """
     Displays n channels of the input HSI
     Must be of shape (batch, B, H, W) or (B, H, W)
@@ -220,7 +221,7 @@ def plot_hsi(Y, n_channels=4, rgb=False, title=None, channels=None):
                 assert i+3 <= B, "Can't display 3 channels if selected channel is the final channel"
                 im = axes[idx].imshow(Y[i:i+3].permute(1,2,0).detach().cpu())
             else:
-                im = axes[idx].imshow(Y[i].detach().cpu())
+                im = axes[idx].imshow(Y[i].detach().cpu(), cmap=cmap)
                 fig.colorbar(im, ax=axes[idx], fraction=0.046, pad=0.04)
             axes[idx].set_title(f"Channel {i} / {B}")
             
@@ -237,7 +238,7 @@ def plot_hsi(Y, n_channels=4, rgb=False, title=None, channels=None):
             if rgb:
                 im = axes[idx].imshow(Y[i:i+3].permute(1,2,0).detach().cpu())
             else:
-                im = axes[idx].imshow(Y[i].detach().cpu())
+                im = axes[idx].imshow(Y[i].detach().cpu(), cmap=cmap)
                 fig.colorbar(im, ax=axes[idx], fraction=0.046, pad=0.04)
             axes[idx].set_title(f"Channel {i} / {B}")
             

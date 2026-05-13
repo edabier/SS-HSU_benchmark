@@ -23,7 +23,7 @@ conda activate hsu
 # Define variables for the job
 N_XP=10
 N_TRAIN=15
-VERSION="v2"
+VERSION="v1"
 SIZE="large"
 
 # Execute the Python script with specific arguments

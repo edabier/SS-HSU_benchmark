@@ -3,6 +3,8 @@ import torch.nn as nn
 from torch.optim.lr_scheduler import _LRScheduler
 from torch.utils.data import Dataset, DataLoader, random_split
 import torch.nn.functional as F
+from torchvision.transforms.functional import normalize
+from scipy.optimize import linear_sum_assignment
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
@@ -16,7 +18,59 @@ from code_christophe.munkres import Munkres
 
 import src.utils.losses as losses
 
-def order_endmembers(E_gt, E_hat, A_hat=None):
+def order_endmembers(tensor_gt, tensor_hat, tensor2_hat=None):
+    """
+    Uses scipy linear_sum_assignement algorithm to reorder tensor_hat columns to match tensor_gt
+    Tensors must be of shape (batch, D, X) or (D, X) where D is the axis along which to reorder
+    tensor_2_hat is another tensor that can be reordered based on the tensor_hat reordering (for abundances)
+    """
+    is_batched = True
+    if tensor_hat.dim() == 2:
+        is_batched = False
+        tensor_hat = tensor_hat.unsqueeze(0)
+    if tensor_gt.dim() == 2:
+        is_batched = False
+        tensor_gt = tensor_gt.unsqueeze(0)
+
+    tensor_hat_ordered = torch.zeros_like(tensor_hat)
+        
+    if tensor2_hat != None:
+        if tensor2_hat.dim() < 4:
+            tensor2_hat = tensor2_hat.unsqueeze(0)
+
+        tensor2_hat_ordered = torch.zeros_like(tensor2_hat)
+
+    for b in range(tensor_hat.size()[0]):
+
+        # Normalize the tensors
+        tensor_gt_norm = F.normalize(tensor_gt[b], p=2.0, dim=1)  # Normalize along reordered axis
+        tensor_hat_norm = F.normalize(tensor_hat[b], p=2.0, dim=1)
+
+        # Compute cost matrix (cosine distance)
+        cost_matrix = torch.acos(torch.clamp(tensor_gt_norm @ tensor_hat_norm.T, -1.0, 1.0))
+        cost_matrix_np = cost_matrix.cpu().numpy() 
+
+        # Solve assignment problem
+        _, col_ind = linear_sum_assignment(cost_matrix_np)
+
+        # Reorder E_hat to match E_gt
+        tensor_hat_ordered[b] = tensor_hat[b, col_ind]
+
+        if tensor2_hat != None:
+            tensor2_hat_ordered[b] = tensor2_hat[b, col_ind]
+
+    if tensor2_hat != None:
+        if is_batched:
+            return tensor_hat_ordered, tensor2_hat_ordered, col_ind
+        else:
+            return tensor_hat_ordered[0], tensor2_hat_ordered[0], col_ind
+    else:
+        if is_batched:
+            return tensor_hat_ordered, col_ind
+        else:
+            return tensor_hat_ordered[0], col_ind
+    
+def order_endmembers_(E_gt, E_hat, A_hat=None):
     if E_hat.dim() == 2:
         E_hat = E_hat.unsqueeze(0)
     if E_gt.dim() == 2:

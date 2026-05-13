@@ -39,13 +39,13 @@ def run_one_xp(i_dataset, i_xp, n_train, dataset, mse_tensor, sad_tensor, Y_init
     B, c = E_init.shape
 
     fm, Y_init_fm, new_H, D, alpha = instantiate_model(Y_init, wavelengths, version, size)
-    E_hats, A_hats = torch.zeros(n_train, B, c), torch.zeros(n_train, c, min(H, new_H), min(H, new_H))
+    E_hats, A_hats = torch.zeros(n_train, B, c), torch.zeros(n_train, c, new_H, new_H)
     loader, _, _ = utils.create_dataloader(dataset, patch_size=H, dev=dev, path=global_path)
 
     for i in range(n_train): 
         print(f"training {i}/{n_train}")
 
-        model = rsfm.Unmixing_from_features(D=D, alpha=alpha, H=min(H, new_H), B=B, c=c)
+        model = rsfm.Unmixing_from_features(D=D, alpha=alpha, H=new_H, B=B, c=c)
         # model = torch.compile(model)
         model.apply(model.weights_init)
         model = models.init_decoder_weights(model, Y_init_fm/Y_init_fm.max(), c, is_unmixer=True)
@@ -126,7 +126,7 @@ def main(args, dev):
     print(f"Running {n_train} xp of {n_train} trainings of DOFA {version}-{size}")
 
     # datasets = ["apex", "jasper", "urban", "samson", "urban4"]
-    datasets = ["urban", "urban4"]
+    datasets = ["apex"]
     # datasets = ["urban4"]
 
     # shape (n_datasets, step, n_xp)

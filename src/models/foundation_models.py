@@ -1,5 +1,6 @@
 import torch.nn as nn
 import torch.nn.functional as F
+import einops
 import torch
 from torchvision.transforms import Pad
 from functools import partial
@@ -10,13 +11,15 @@ import argparse
 import os
 from timm.models.vision_transformer import Block
 
-import src.models.transformer as transformer
-import src.utils.utils as utils
-import src.utils.losses as losses
+import matplotlib.pyplot as plt 
 
-global_path = "/home/ids/edabier/HSU"
+from src.utils import plots
+from src.utils import utils
+from src.utils import losses
+
+# global_path = "/home/ids/edabier/HSU"
 # global_path = "/Users/edabier/Documents/Thèse/Thèse_Télécom"
-# global_path = "/home/edabier/Documents/Thèse/benchmark"
+global_path = "/home/edabier/Documents/Thèse/benchmark"
 sys.path.append(global_path)
 
 sys.path.append(f"{global_path}/SpecAware")
@@ -25,7 +28,6 @@ from SpecAware.example import models_SpecAware_encoder
 sys.path.append(f"{global_path}/spectral_earth")
 from spectral_earth.src.backbones import spec_vit
 from spectral_earth.src.backbones import spec_resnet
-from spectral_earth.src.backbones.spec_vit import SpecViTBase
 
 sys.path.append(f"{global_path}/IEEE_TPAMI_SpectralGPT")
 import models_mae_spectral
@@ -356,7 +358,7 @@ def create_fm(fm_name, Y, c=None, n_features=1, size="base", version="v2", use_c
 
         if size == "large":
             if version == "v2":
-                check_point = torch.load(f'{path}/DOFA/checkpoints/dofav2_vit_large_e150.pth', map_location=device)
+                check_point = torch.load(f'{path}/pretrained_models/DOFA/dofav2_vit_large_e150.pth', map_location=device)
                 check_model = {
                     k[len("model."):]: v
                     for k, v in check_point.items()
@@ -368,7 +370,7 @@ def create_fm(fm_name, Y, c=None, n_features=1, size="base", version="v2", use_c
                 fm.load_state_dict(check_point, strict=False)
                 fm.load_state_dict(check_model, strict=False)
             else:
-                check_point = torch.load(f'{path}/DOFA/checkpoints/DOFA_ViT_large_e100.pth', map_location=device)
+                check_point = torch.load(f'{path}/pretrained_models/DOFA/DOFA_ViT_large_e100.pth', map_location=device)
                 fm = OFAViT(
                     img_size=224, patch_size=16, embed_dim=1024, depth=24, num_heads=16, out_indices=out_indices, mlp_ratio=4,
                     norm_layer=partial(nn.LayerNorm, eps=1e-6), use_cls=use_cls, extend_cls=extend_cls)
@@ -376,7 +378,7 @@ def create_fm(fm_name, Y, c=None, n_features=1, size="base", version="v2", use_c
 
         elif size == "base":
             if version == "v2":
-                check_point = torch.load(f'{path}/DOFA/checkpoints/dofav2_vit_base_e150.pth', map_location=device)
+                check_point = torch.load(f'{path}/pretrained_models/DOFA/dofav2_vit_base_e150.pth', map_location=device)
                 check_model = {
                     k[len("model."):]: v
                     for k, v in check_point.items()
@@ -388,7 +390,7 @@ def create_fm(fm_name, Y, c=None, n_features=1, size="base", version="v2", use_c
                 fm.load_state_dict(check_point, strict=False)
                 fm.load_state_dict(check_model, strict=False)
             else:
-                check_point = torch.load(f'{path}/DOFA/checkpoints/DOFA_ViT_base_e100.pth', map_location=device)
+                check_point = torch.load(f'{path}/pretrained_models/DOFA/DOFA_ViT_base_e100.pth', map_location=device)
                 fm = OFAViT(
                     img_size=224, patch_size=16, embed_dim=768, depth=12, num_heads=12, out_indices=out_indices, mlp_ratio=4,
                     norm_layer=partial(nn.LayerNorm, eps=1e-6), use_cls=use_cls, extend_cls=extend_cls)
@@ -403,7 +405,7 @@ def create_fm(fm_name, Y, c=None, n_features=1, size="base", version="v2", use_c
         Y = Y[:,:,:new_H, :new_H]
 
         if size == "base":
-            checkpoint_path = f"{global_path}/HyperFree/data/HyperFree-b.pth"
+            checkpoint_path = f"{path}/pretrained_models/HyperFree/HyperFree-b.pth"
             fm = image_encoder.ImageEncoderViT(depth=12, embed_dim=768,
                     img_size=new_H, mlp_ratio=4, norm_layer=partial(torch.nn.LayerNorm, eps=1e-6),
                     num_heads=12, patch_size=16, qkv_bias=True,
@@ -411,7 +413,7 @@ def create_fm(fm_name, Y, c=None, n_features=1, size="base", version="v2", use_c
                     merge_indexs = [3, 12], window_size=14, out_chans=256)
 
         elif size == "large":
-            checkpoint_path = f"{global_path}/HyperFree/data/HyperFree-l.pth"
+            checkpoint_path = f"{path}/pretrained_models/HyperFree/HyperFree-l.pth"
             fm = image_encoder.ImageEncoderViT(depth=12, embed_dim=1024,
                     img_size=1024, mlp_ratio=4, norm_layer=partial(torch.nn.LayerNorm, eps=1e-6),
                     num_heads=16, patch_size=16, qkv_bias=True,
@@ -419,7 +421,7 @@ def create_fm(fm_name, Y, c=None, n_features=1, size="base", version="v2", use_c
                     merge_indexs = [6, 24], window_size=14, out_chans=256)
 
         elif size == "huge":
-            checkpoint_path = f"{global_path}/HyperFree/data/HyperFree-h.pth"
+            checkpoint_path = f"{path}/pretrained_models/HyperFree/HyperFree-h.pth"
             fm = image_encoder.ImageEncoderViT(depth=12, embed_dim=1280,
                     img_size=1024, mlp_ratio=4, norm_layer=partial(torch.nn.LayerNorm, eps=1e-6),
                     num_heads=16, patch_size=16, qkv_bias=True,
@@ -444,7 +446,7 @@ def create_fm(fm_name, Y, c=None, n_features=1, size="base", version="v2", use_c
         fm = models_SpecAware_encoder.MaskedHSIAutoencoderViT(embed_dim=768, patch_size=8,
                                     depth=12, num_heads=12, mlp_ratio=4, out_indices=out_indices,
                                     norm_layer=partial(nn.LayerNorm, eps=1e-6))
-        checkpoint = torch.load(f"{global_path}/SpecAware/SpecAware_Base_model.pth")
+        checkpoint = torch.load(f"{path}/pretrained_models/SpecAware/SpecAware_Base_model.pth")
         fm.load_state_dict(checkpoint)
 
     elif fm_name == "HyperSIGMA":
@@ -453,8 +455,8 @@ def create_fm(fm_name, Y, c=None, n_features=1, size="base", version="v2", use_c
         embed_dim, seg_patches, NUM_TOKENS, scale, patch_size = 768, 2, 64, 1, 64
         fm = HyperSIGMA_Unmix(patch_size=patch_size, channels=B, seg_patches=seg_patches, NUM_TOKENS=NUM_TOKENS, embed_dim=embed_dim, num_em=c, scale=scale)
 
-        spat_path = f"{path}/HyperSIGMA/HyperspectralUnmixing/data/spat-vit-base-ultra-checkpoint-1599.pth"
-        spec_path = f"{path}/HyperSIGMA/HyperspectralUnmixing/data/spec-vit-base-ultra-checkpoint-1599.pth"
+        spat_path = f"{path}/pretrained_models/HyperSIGMA/spat-vit-base-ultra-checkpoint-1599.pth"
+        spec_path = f"{path}/pretrained_models/HyperSIGMA/spec-vit-base-ultra-checkpoint-1599.pth"
         Spat_pernet = torch.load(spat_path, map_location=torch.device('cpu'), weights_only=False)
         Spat_pernet = Spat_pernet['model']
         for k in list(Spat_pernet.keys()):
@@ -492,22 +494,36 @@ def create_fm(fm_name, Y, c=None, n_features=1, size="base", version="v2", use_c
             new_H = 128
         Y = Y[:,:,:new_H, :new_H]
 
-        fm = spec_vit.SpecViTBase()
-        checkpoint = torch.load(f"{path}/spectral_earth/data/data/spec_ViTb_mae.pth", map_location=dev)
+        if size == "small":
+            fm = spec_vit.SpecViTSmall()
+            checkpoint = torch.load(f"{path}/spectral_earth/data/data/spec_ViTs_mae.pth", map_location=dev)
+
+        elif size == "base":
+            fm = spec_vit.SpecViTBase()
+            checkpoint = torch.load(f"{path}/spectral_earth/data/data/spec_ViTb_mae.pth", map_location=dev)
+
+        elif size == "large":
+            fm = spec_vit.SpecViTLarge()
+            checkpoint = torch.load(f"{path}/spectral_earth/data/data/spec_ViTl_mae.pth", map_location=dev)
+
+        elif size == "huge":
+            fm = spec_vit.SpecViTHuge()
+            checkpoint = torch.load(f"{path}/spectral_earth/data/data/spec_ViTh_mae.pth", map_location=dev)
+
         fm.load_state_dict(checkpoint, strict=False)
 
     elif fm_name == "SpecRnDino":
         fm = spec_resnet.SpecResNet50(num_classes=0)
-        checkpoint = torch.load(f"{path}/spectral_earth/data/data/spec_rn50_dino.pth", map_location=dev)
+        checkpoint = torch.load(f"{path}/pretrained_models/SpectralEarth/spec_rn50_dino.pth", map_location=dev)
         fm.load_state_dict(checkpoint, strict=False)
 
     elif fm_name == "SpecRnMoco":
         fm = spec_resnet.SpecResNet50(num_classes=0)
-        checkpoint = torch.load(f"{path}/spectral_earth/data/data/spec_rn50_moco.pth", map_location=dev)
+        checkpoint = torch.load(f"{path}/pretrained_models/SpectralEarth/spec_rn50_moco.pth", map_location=dev)
         fm.load_state_dict(checkpoint, strict=False)
     
     else:
-        print("Fm name is not known, use DOFA, HyperFree, HyperSIGMA, SpecViT, SpecRnDino or SpecRnMoco")
+        raise("Fm name is not known, use DOFA, HyperFree, HyperSIGMA, SpecViT, SpecRnDino or SpecRnMoco")
         return
     
     return fm, Y, new_H
@@ -537,7 +553,7 @@ def reshape_Y(fm_name, Y, new_H=None, A=None):
                 A = F.interpolate(A, size=(new_H,new_H))
             A = A[:,:,:new_H, :new_H]
 
-    elif fm_name == "SpecViTBase":
+    elif fm_name == "SpecViTBase" or fm_name == "SpecViT" or fm_name == "SpecViTSmall" or fm_name == "SpecViTLarge" or fm_name == "SpecViTHuge":
         if Y.shape[-1] < new_H:
             Y = F.interpolate(Y, size=(new_H,new_H))
         Y = Y[:,:,:new_H, :new_H]
@@ -574,7 +590,7 @@ def extract_f(fm, Y, new_H, wavelengths, A=None, use_cls=False):
         features = get_hyperfree_features(fm, Y, wavelengths)
         noise = torch.rand_like(features)
 
-    elif fm_name == "SpecViTBase":
+    elif fm_name == "SpecViTBase" or fm_name == "SpecViT" or fm_name == "SpecViTSmall" or fm_name == "SpecViTLarge" or fm_name == "SpecViTHuge":
 
         features = get_specvit_features(fm, Y, use_cls)
         noise = torch.rand_like(features)
@@ -586,12 +602,40 @@ def extract_f(fm, Y, new_H, wavelengths, A=None, use_cls=False):
         features = fm.forward_features(Y)
 
     else:
+        raise("Fm is not known, use DOFA, HyperFree, HyperSIGMA, SpecViT, SpecRnDino or SpecRnMoco")
         return
     
     if A != None:
         return Y, A, features
     else:
         return Y, features
+
+@torch.no_grad()
+def build_positional_basis(fm, B, H, wavelengths, svd_components=50):
+    noise_img = torch.rand(1, B, H, H)
+    _, noise_features = extract_f(fm, noise_img, H, wavelengths)
+    noise_features = F.normalize(noise_features, p=2, dim=1)
+    # E = einops.rearrange(noise_features, 'c h w -> c (h w)')
+
+    E = noise_features - noise_features.mean(dim=1, keepdim=True)
+    # E = E / (E.std(dim=1, keepdim=True) + 1e-6)  # Normalize
+
+    U, _, _ = torch.linalg.svd(E, full_matrices=False)
+
+    return U[:, :svd_components].contiguous()
+
+def debias_features(features, fm, B, H, wavelengths, svd_components=50):
+    """Project features onto the orthogonal complement of the positional subspace."""
+    D, alpha, _ = features.shape
+    
+    features = F.normalize(features, p=2, dim=1)
+    X = features.reshape(D, alpha * alpha)
+
+    basis = build_positional_basis(fm, B, H, wavelengths, svd_components).to(X.device)
+
+    P_perp = torch.eye(D, device=X.device, dtype=X.dtype) - basis @ basis.T + 1e-6 * torch.eye(D, device=X.device, dtype=X.dtype)
+    X_deb = torch.matmul(P_perp.unsqueeze(0), X).reshape(D, alpha, alpha)
+    return F.normalize(X_deb, p=2, dim=2)
 
 def get_hypersigma_features(fm, Y, patch_size=64):
     """
@@ -807,21 +851,36 @@ class Unmixing_from_features(nn.Module):
             loss_mse = W_mse * losses.hypersigma_mse(Y_gt, Y_hat)
         else:
             loss_mse = W_mse * mse(Y_gt, Y_hat)/(torch.norm(Y_gt)**2)
+
+        """Abundances and endmembers regularisation"""
         
         # Enforce Sum of all wavelength to be 1 for each endmember:
         # Minimize 1 - sum(E[:,i]) for i in c
-        loss_norm_e = W_e * torch.norm(torch.ones(E_hat.shape[1]) - torch.sum(E_hat, dim=0))
+        loss_norm_e = 0 #W_e * torch.norm(torch.ones(E_hat.shape[1]) - torch.sum(E_hat, dim=0))
 
         # TV on endmembers (sum of difference between consecutive endmembers)
         loss_tv_e = W_tv_e * (torch.abs(E_hat[:, 1:] - E_hat[:, :-1]).sum())
 
         # TV on abundances (sum of difference between consecutive horizontal pixels + vertical pixels)
-        loss_tv_a = W_tv_a * tv(A_hat)
+        loss_tv_a = 0 #W_tv_a * tv(A_hat)
 
-        features_down = downsample(features_hr)
-        loss_features = W_feat * l1(features_down, features_lr)
+        """Feature regularisation"""
+
+        features_down = utils.normalize(downsample(features_hr))
+        loss_features = W_feat * l1(features_down, utils.normalize(features_lr))
+        # print(loss_features)
+        # features_lr_flat = features_lr.view(features_lr.shape[0], -1)
+        # features_down_flat = features_down.view(features_lr.shape[0], -1)
+        # features_lr_norm = F.normalize(features_lr_flat, p=2, dim=1)
+        # features_down_norm = F.normalize(features_down_flat, p=2, dim=1)
+        # correlation = torch.mm(features_lr_norm, features_down_norm.t())
+        # target = torch.eye(features_lr.shape[0], device=features_lr.device)
+        # loss_features = W_feat * F.mse_loss(correlation, target)
+        # loss_features = torch.norm(torch.mm(upsample.weight, upsample.weight.t()) - torch.eye(H**2, device=upsample.weight.device))
+
+        # loss_features = W_feat * l1(features_down, features_lr)
         
-        loss_tv_feat = W_tv_feat * tv(features_hr.unsqueeze(0))
+        loss_tv_feat = 0 #W_tv_feat * tv(features_hr.unsqueeze(0))
 
         loss = loss_sad + loss_ab + loss_tv_e + loss_tv_a + loss_mse + loss_norm_e + loss_features + loss_tv_feat
 
