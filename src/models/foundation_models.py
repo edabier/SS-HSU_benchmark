@@ -766,6 +766,99 @@ class Decoder(nn.Module):
         else:
             return self.decoder.weight.data.squeeze([2, 3])
 
+class Unmixing_from_features0(nn.Module):
+    def __init__(self, D, B, c, H=224, alpha=None, n_features=1, re_down=False):
+        """
+        Args:
+            D (int): The embed_dim
+            B (int): The number of spectral bands in the hsi
+            c (int): The number of endmembers to extract
+            H (int): The size of the input hsi
+            alpha (int): The size of the features
+            n_features (optional : int): The size of the list of features in the case of several extracted features (default 1)
+
+        """
+        super(Unmixing_from_features0, self).__init__()
+        self.D = D
+        self.alpha = alpha
+        self.B = B
+        self.c = c
+        self.H = H
+        self.n_features = n_features
+
+        # Upsampling features
+        self.upsample = nn.Linear(self.n_features*(self.alpha**2), self.H**2)
+
+        self.abundance_estimator = nn.Sequential(
+            nn.Conv2d(D, c, kernel_size=1, bias=False),
+            nn.LeakyReLU(0.02),
+            nn.BatchNorm2d(c),
+            nn.Dropout(0.2)
+        )
+
+        self.sum_to_one = Sum_to_one()
+        self.decoder = Decoder(B=B, c=c)
+
+    @staticmethod
+    def weights_init(m):
+        if type(m) == nn.Conv2d:
+            nn.init.kaiming_normal_(m.weight.data)
+
+    @staticmethod
+    def loss(Y_gt, Y_hat, A_hat, E_hat, alpha=None, Y_hat_lr=None, W_sad=1, W_ab=0.6, W_tv_e=3e-5, W_mse=0.09, return_losses=False):
+        sad = losses.SADLoss()
+        mse = nn.MSELoss(reduction='sum')
+
+        if alpha != None:
+            downsample = nn.AdaptiveAvgPool2d(alpha)
+        
+        loss_sad = W_sad * sad(Y_gt, Y_hat)
+        loss_ab = W_ab * torch.sqrt(A_hat).mean()
+        loss_mse = W_mse * mse(Y_gt, Y_hat)/(torch.norm(Y_gt)**2)
+
+        """Abundances and endmembers regularisation"""
+
+        # TV on endmembers (sum of difference between consecutive endmembers)
+        loss_tv_e = W_tv_e * (torch.abs(E_hat[:, 1:] - E_hat[:, :-1]).sum())
+
+        """Reconstruction low resolution"""
+        if Y_hat_lr != None:
+            Y_lr = downsample(Y_hat)
+            loss_re_down = sad(Y_lr, Y_hat_lr) + W_mse * mse(Y_lr, Y_hat_lr)
+        else:
+            loss_re_down = 0
+
+        loss = loss_sad + loss_ab + loss_tv_e + loss_mse + loss_re_down
+
+        if return_losses:
+            return loss, loss_sad, loss_ab, loss_tv_e, loss_mse
+        else:
+            return loss
+
+    def get_abundances(self, features):
+
+        features = utils.oneD_to_2d(features)
+        # features = (features - features.min())
+        # features = features/ features.max()
+
+        A_hat_lr = self.abundance_estimator(features.unsqueeze(0))
+        A_hat_lr = self.sum_to_one(A_hat_lr)
+        A_hat = self.upsample(A_hat_lr.reshape(1, self.c, self.n_features*self.alpha*self.alpha))
+        A_hat = utils.oneD_to_2d(A_hat)
+        A_hat = self.sum_to_one(A_hat)
+
+        return A_hat, A_hat_lr
+    
+    def get_endmembers(self):
+        return self.decoder.get_endmembers()
+    
+    def forward(self, features):
+        A_hat, A_hat_lr = self.get_abundances(features)
+        Y_hat = self.decoder(A_hat)
+        E_hat = self.decoder.get_endmembers()
+
+        return E_hat, A_hat, Y_hat, A_hat_lr
+ 
 class Unmixing_from_features(nn.Module):
     def __init__(self, D, B, c, H=224, alpha=None, n_features=1, use_cls=False, hypersig=False, is_cnnaeu=False):
         """
@@ -961,7 +1054,6 @@ class Unmixing_from_features2(nn.Module):
             B (int): The number of spectral bands in the hsi
             c (int): The number of endmembers to extract
             H (int): The size of the input hsi
-            alpha (int): The size of the features
             n_features (int): The size of the list of features in the case of several extracted features
 
         """

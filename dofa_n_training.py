@@ -11,7 +11,8 @@ import wandb
 
 from mmengine.optim import build_optim_wrapper
 
-sys.path.append("/home/ids/edabier/HSU/HyperSIGMA/HyperspectralUnmixing")
+global_path = "/home/ids/edabier/HSU"
+sys.path.append(f"{global_path}/HyperSIGMA/HyperspectralUnmixing")
 from mmcv__custom import layer_decay_optimizer_constructor_vit
 
 from src.utils import utils
@@ -21,50 +22,27 @@ from src.models import models
 
 import logging
 
-def instantiate_model(Y, wavelengths, H):
+def instantiate_model(Y, wavelengths, version="v1", size="large"):
 
-    n_features = 1
-    use_cls = False
-    extend_cls = False
-
-    if H < 224:
-        Y_dofa = F.interpolate(Y, size=(224,224))
-        H_dofa = 224
-    else:
-        Y_dofa = Y.clone()
-        H_dofa = 224
-    Y_dofa = Y_dofa[:,:,:H_dofa, :H_dofa]
-    fm, _, _ = rsfm.create_fm("DOFA", Y_dofa, n_features=n_features, use_cls=use_cls, extend_cls=extend_cls)
-    features_dofa = rsfm.get_dofa_features(fm, Y_dofa, wavelengths)
-    D_dofa = int(features_dofa.shape[0]/n_features)
+    fm, Y_init_fm, new_H = rsfm.create_fm("DOFA", Y, size=size, version=version, path=global_path)
+    features_dofa = rsfm.get_dofa_features(fm, Y_init_fm, wavelengths)
+    D = int(features_dofa.shape[0])
     alpha = int(features_dofa.shape[1]**0.5)
 
-    return fm, D_dofa, alpha, H_dofa
-
-def transform_Y(Y):
-    batch, B, H, _ = Y.shape
-
-    if H < 224:
-        Y = F.interpolate(Y, size=(224,224))
-        new_H = 224
-    else:
-        new_H = 224
-    Y = Y[:,:,:224, :224]
-    return Y, new_H
+    return fm, Y_init_fm, new_H, D, alpha
 
 def run_one_xp(i_dataset, i_train, n_train, i_xp, dataset, mse_tensor, sad_tensor, Y_init, wavelengths, B, c, H, dev):
 
-    fm, D_dofa, alpha, new_H = instantiate_model(Y_init, wavelengths, H)
-    sads, mses = [], []
+    fm, Y_init_fm, new_H, D, alpha = instantiate_model(Y_init, wavelengths, H)
+    # sads, mses = [], []
     E_hats, A_hats = torch.zeros(n_train, B, c), torch.zeros(n_train, c, new_H, new_H)
 
     for i in range(n_train): 
         print(f"training {i}/{n_train}")
 
-        model = rsfm.Unmixing_from_features(D=D_dofa, alpha=alpha, B=B, c=c, use_cls=False)
+        model = rsfm.Unmixing_from_features0(D=D, alpha=alpha, new_H=new_H, B=B, c=c)
         model.apply(model.weights_init)
-        Y, new_H = transform_Y(Y_init)
-        model = models.init_decoder_weights(model, Y/Y.max(), c, is_unmixer=True, use_sivm=True)
+        model = models.init_decoder_weights(model, Y_init_fm/Y_init_fm.max(), c, is_unmixer=True)
 
         loader, _, _ = utils.create_dataloader(dataset, patch_size=H, dev=dev)
         epochs, lr = 200, 0.002
@@ -82,14 +60,11 @@ def run_one_xp(i_dataset, i_train, n_train, i_xp, dataset, mse_tensor, sad_tenso
                 optimizer.zero_grad()
                 
                 Y = utils.oneD_to_2d(Y).to(dev)
-                A = utils.oneD_to_2d(A).to(dev)
-                E = E.to(dev)
 
-                Y, A, features = rsfm.extract_f(fm, Y, new_H, wavelengths, A, use_cls=False)
-                E_hat, A_hat, Y_hat = model(features)
+                Y_fm, A, features = rsfm.extract_f(fm, Y, new_H, wavelengths, A)
+                E_hat, A_hat, Y_hat, _ = model(features)
                 
-                Yn = utils.sum_to_one(Y)
-                loss = model.loss(Y, Y_hat, A_hat, E_hat)
+                loss = model.loss(Y_fm, Y_hat, A_hat, E_hat)
 
                 loss.backward()
                 nn.utils.clip_grad_norm_(model.parameters(), max_norm=10, norm_type=1)
@@ -103,7 +78,7 @@ def run_one_xp(i_dataset, i_train, n_train, i_xp, dataset, mse_tensor, sad_tenso
         
         with torch.no_grad():
             _, A_init, features = rsfm.extract_f(fm, Y_init, new_H, wavelengths, A, False)
-            E_hat1, A_hat1, Y_hat1 = model(features)
+            E_hat1, A_hat1, Y_hat1, _ = model(features)
 
         E_hats[i] = E_hat1
         A_hats[i] = A_hat1.squeeze(0)
@@ -112,9 +87,9 @@ def run_one_xp(i_dataset, i_train, n_train, i_xp, dataset, mse_tensor, sad_tenso
         gc.collect()
         torch.cuda.empty_cache()
     
-    sads_tensor = torch.tensor(sads)
-    mses_tensor = torch.tensor(mses)
-    mses_tensor = mses_tensor[~mses_tensor.isnan()]
+    # sads_tensor = torch.tensor(sads)
+    # mses_tensor = torch.tensor(mses)
+    # mses_tensor = mses_tensor[~mses_tensor.isnan()]
 
     E_hat_m = torch.mean(E_hats, dim=0)
     A_hat_m = torch.mean(A_hats, dim=0)
@@ -137,10 +112,10 @@ def main(args, dev):
     n_xp = 10 #args.n_xp
     step = 5 #args.step
 
-    datasets = ["apex", "jasper", "urban"] #["samson"]
+    datasets = ["apex", "jasper"]#, "urban", "samson", "urban4"]
 
     # shape (n_datasets, step, n_xp)
-    trainings = range(5, 35, step)
+    trainings = range(1, 35, step)
     mse_tensor = torch.zeros(len(datasets), len(trainings), n_xp)
     sad_tensor = torch.zeros(len(datasets), len(trainings), n_xp)
 
