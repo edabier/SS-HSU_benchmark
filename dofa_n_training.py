@@ -23,7 +23,7 @@ from src.models import models
 import logging
 
 def instantiate_model(Y, wavelengths, version="v1", size="large"):
-
+    Y = F.pad(Y, pad=(14,14,14,14), mode="reflect")
     fm, Y_init_fm, new_H = rsfm.create_fm("DOFA", Y, size=size, version=version, path=global_path)
     features_dofa = rsfm.get_dofa_features(fm, Y_init_fm, wavelengths)
     D = int(features_dofa.shape[0])
@@ -31,7 +31,12 @@ def instantiate_model(Y, wavelengths, version="v1", size="large"):
 
     return fm, Y_init_fm, new_H, D, alpha
 
-def run_one_xp(i_dataset, i_train, n_train, i_xp, dataset, mse_tensor, sad_tensor, Y_init, wavelengths, B, c, H, dev):
+def run_one_xp(i_dataset, i_train, n_train, i_xp, dataset, mse_tensor, sad_tensor, Y_init, A_init, E_init, wavelengths, H, dev):
+
+    Y_init = Y_init.to(dev)
+    A_init = A_init.to(dev)
+    E_init = E_init.to(dev)
+    B, c = E_init.shape
 
     fm, Y_init_fm, new_H, D, alpha = instantiate_model(Y_init, wavelengths, H)
     # sads, mses = [], []
@@ -40,7 +45,7 @@ def run_one_xp(i_dataset, i_train, n_train, i_xp, dataset, mse_tensor, sad_tenso
     for i in range(n_train): 
         print(f"training {i}/{n_train}")
 
-        model = rsfm.Unmixing_from_features0(D=D, alpha=alpha, new_H=new_H, B=B, c=c)
+        model = rsfm.Unmixing_from_features0(D=D, alpha=alpha-2, B=B, c=c)
         model.apply(model.weights_init)
         model = models.init_decoder_weights(model, Y_init_fm/Y_init_fm.max(), c, is_unmixer=True)
 
@@ -55,16 +60,21 @@ def run_one_xp(i_dataset, i_train, n_train, i_xp, dataset, mse_tensor, sad_tenso
 
         for epoch in range(epochs):
             
-            for Y, E, A in loader:
+            for Y, _, _ in loader:
 
                 optimizer.zero_grad()
-                
-                Y = utils.oneD_to_2d(Y).to(dev)
 
-                Y_fm, A, features = rsfm.extract_f(fm, Y, new_H, wavelengths, A)
+                Y = utils.oneD_to_2d(Y).to(dev)  
+                Y = F.pad(Y, pad=(14,14,14,14), mode="reflect")
+
+                Y_fm, features = rsfm.extract_f(fm, Y, new_H, wavelengths)
+                
+                Y_gt = F.interpolate(Y[:, :, alpha:-alpha, alpha:-alpha], size=(224, 224))
+                features = utils.oneD_to_2d(features)[:, 1:-1, 1:-1]
+                features = features.reshape(D, (alpha-2)*(alpha-2))
                 E_hat, A_hat, Y_hat, _ = model(features)
                 
-                loss = model.loss(Y_fm, Y_hat, A_hat, E_hat)
+                loss = model.loss(Y_gt, Y_hat, A_hat, E_hat)
 
                 loss.backward()
                 nn.utils.clip_grad_norm_(model.parameters(), max_norm=10, norm_type=1)
@@ -77,7 +87,10 @@ def run_one_xp(i_dataset, i_train, n_train, i_xp, dataset, mse_tensor, sad_tenso
         model.eval()
         
         with torch.no_grad():
-            _, A_init, features = rsfm.extract_f(fm, Y_init, new_H, wavelengths, A, False)
+            _, A_init_fm, features = rsfm.extract_f(fm, Y_init, new_H, wavelengths, A_init)
+            features = utils.oneD_to_2d(features)[:, 1:-1, 1:-1]
+            features = features.reshape(D, (alpha-2)*(alpha-2))
+
             E_hat1, A_hat1, Y_hat1, _ = model(features)
 
         E_hats[i] = E_hat1
@@ -96,7 +109,7 @@ def run_one_xp(i_dataset, i_train, n_train, i_xp, dataset, mse_tensor, sad_tenso
 
     assert not E_hat_m.isnan().any(), "E_hat_m has nan values"
 
-    sad, _, mse = plots.compute_metrics_and_plot(E_hat_m, A_hat_m, A_init, E, normalize_E=True, normalize_A=True, return_results=True, plot_E=False, plot_A=False)
+    sad, _, mse = plots.compute_metrics_and_plot(E_hat_m, A_hat_m, A_init_fm, E_init, normalize_E=True, normalize_A=True, return_results=True, plot_E=False, plot_A=False)
     print(f"Average SAD = {format(sad, '.3f')}, MSE = {format(mse, '.3f')}")
 
     mse_tensor[i_dataset, i_train, i_xp] = mse
@@ -112,10 +125,11 @@ def main(args, dev):
     n_xp = 10 #args.n_xp
     step = 5 #args.step
 
-    datasets = ["apex", "jasper"]#, "urban", "samson", "urban4"]
+    datasets = ["samson", "urban"]
 
     # shape (n_datasets, step, n_xp)
-    trainings = range(1, 35, step)
+    trainings = [1]
+    trainings += [i for i in range(5,25,step)]
     mse_tensor = torch.zeros(len(datasets), len(trainings), n_xp)
     sad_tensor = torch.zeros(len(datasets), len(trainings), n_xp)
 
@@ -124,43 +138,48 @@ def main(args, dev):
         print(f"####### {dataset} #######")
         
         data = io.loadmat(f"/home/ids/edabier/HSU/SS-HSU_benchmark/datasets/{dataset}.mat")
-        Y_flat = torch.tensor(data["Y"], dtype=torch.float32).unsqueeze(0)
-        E = torch.tensor(data["E"])
-        B, c, N = E.shape[0], E.shape[1], Y_flat.shape[1]
+        Y_flat = torch.tensor(data["Y"], dtype=torch.float32)
+        E_init = torch.tensor(data["E"], dtype=torch.float)
+        A_init = torch.tensor(data["A"], dtype=torch.float)
 
-        Y = utils.oneD_to_2d(Y_flat)
-        H = Y.shape[-1]
+        Y_init = utils.oneD_to_2d(Y_flat).unsqueeze(0)
+        A_init = utils.oneD_to_2d(A_init).unsqueeze(0)
+        H = Y_init.shape[-1]
 
         with open(f"/home/ids/edabier/HSU/SS-HSU_benchmark/datasets/{dataset}_wavelength.txt", "r") as file:
             lines = file.readlines()
             wavelengths = [float(line.strip()) for line in lines if line.strip()]
 
-        mean_metrics = torch.zeros(len(trainings))
-        std_metrics = torch.zeros(len(trainings))
+        mean_sad = torch.zeros(len(trainings))
+        std_sad = torch.zeros(len(trainings))
+        mean_nmse = torch.zeros(len(trainings))
+        std_nmse = torch.zeros(len(trainings))
 
-        for idx_train, n_train in enumerate(range(5, 35, step)):
+        for idx_train, n_train in enumerate(trainings):
 
             print(f"Training DOFA {n_train} times")
 
             for i_xp in range(n_xp):
 
                 print(f"------ Running {i_xp+1}th experiment ------")
-                mse_tensor, sad_tensor = run_one_xp(i_dataset, idx_train, n_train, i_xp, dataset, mse_tensor, sad_tensor, Y, wavelengths, B, c, H, dev)
+                mse_tensor, sad_tensor = run_one_xp(i_dataset, idx_train, n_train, i_xp, dataset, mse_tensor, sad_tensor, Y_init, A_init, E_init, wavelengths, H, dev)
                 torch.cuda.synchronize()
                 torch.cuda.empty_cache()
                 gc.collect()
             
-            metrics_i = (mse_tensor[i_dataset, idx_train] + sad_tensor[i_dataset, idx_train])/2
-            print(mse_tensor[i_dataset].shape, metrics_i.shape, mean_metrics.shape)
-            print(torch.mean(metrics_i, dim=0).shape, torch.std(metrics_i, dim=0).shape)
-            mean_metrics[idx_train] = torch.mean(metrics_i, dim=0)
-            std_metrics[idx_train] = torch.std(metrics_i, dim=0)
+            # metrics_i = (mse_tensor[i_dataset, idx_train] + sad_tensor[i_dataset, idx_train])/2
+            mean_sad[idx_train] = torch.mean(sad_tensor[i_dataset, idx_train], dim=0)
+            std_sad[idx_train] = torch.std(sad_tensor[i_dataset, idx_train], dim=0)
+            mean_nmse[idx_train] = torch.mean(mse_tensor[i_dataset, idx_train], dim=0)
+            std_nmse[idx_train] = torch.std(mse_tensor[i_dataset, idx_train], dim=0)
             
-            wandb.log({f"{dataset}_DOFA_{idx_train}_mean": mean_metrics[idx_train]})
-            wandb.log({f"{dataset}_DOFA_{idx_train}_std": std_metrics[idx_train]})
+            wandb.log({f"{dataset}_SAD_{n_train}_mean": mean_sad[idx_train]})
+            wandb.log({f"{dataset}_SAD_{n_train}_std": std_sad[idx_train]})
+            wandb.log({f"{dataset}_NMSE_{n_train}_mean": mean_nmse[idx_train]})
+            wandb.log({f"{dataset}_NMSE_{n_train}_std": std_nmse[idx_train]})
 
-        torch.save(mean_metrics, f"/home/ids/edabier/HSU/SS-HSU_benchmark/dofa_n_trains/{dataset}_DOFA_{idx_train}_mean.pt")
-        torch.save(std_metrics, f"/home/ids/edabier/HSU/SS-HSU_benchmark/dofa_n_trains/{dataset}_DOFA_{idx_train}_std.pt")
+        # torch.save(mean_metrics, f"/home/ids/edabier/HSU/SS-HSU_benchmark/dofa_n_trains/{dataset}_DOFA_{idx_train}_mean.pt")
+        # torch.save(std_metrics, f"/home/ids/edabier/HSU/SS-HSU_benchmark/dofa_n_trains/{dataset}_DOFA_{idx_train}_std.pt")
 
 if __name__ == "__main__":
 

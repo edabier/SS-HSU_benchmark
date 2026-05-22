@@ -3,7 +3,7 @@ import torch.nn as nn
 from torch.optim.lr_scheduler import _LRScheduler
 from torch.utils.data import Dataset, DataLoader, random_split
 import torch.nn.functional as F
-from torchvision.transforms.functional import normalize
+# from torchvision.transforms.functional import normalize
 from scipy.optimize import linear_sum_assignment
 import numpy as np
 import matplotlib.pyplot as plt

@@ -25,12 +25,13 @@ N_XP=10
 N_TRAIN=15
 VERSION="v1"
 SIZE="large"
+MODEL="DOFA"
 
 # Execute the Python script with specific arguments
 # srun python /home/ids/edabier/HSU/SS-HSU_benchmark/fm_unmixing.py --n_xp $N_XP
 # srun python /home/ids/edabier/HSU/SS-HSU_benchmark/dofa_n_training.py
 # srun python /home/ids/edabier/HSU/SS-HSU_benchmark/padding_training_2.py
-srun python /home/ids/edabier/HSU/SS-HSU_benchmark/dofa_15_training.py --n_xp $N_XP --n_train $N_TRAIN --version $VERSION --size $SIZE
+srun python /home/ids/edabier/HSU/SS-HSU_benchmark/dofa_15_training.py --n_xp $N_XP --n_train $N_TRAIN --version $VERSION --size $SIZE --model $MODEL
 # srun python /home/ids/edabier/HSU/SS-HSU_benchmark/dofa_shift_15_training.py --n_xp $N_XP --n_train $N_TRAIN --version $VERSION --size $SIZE
 
 # Retrieve and log job information

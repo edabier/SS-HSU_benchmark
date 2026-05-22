@@ -16,10 +16,11 @@ import matplotlib.pyplot as plt
 from src.utils import plots
 from src.utils import utils
 from src.utils import losses
+from src.models import upsamplers
 
-# global_path = "/home/ids/edabier/HSU"
+global_path = "/home/ids/edabier/HSU"
 # global_path = "/Users/edabier/Documents/Thèse/Thèse_Télécom"
-global_path = "/home/edabier/Documents/Thèse/benchmark"
+# global_path = "/home/edabier/Documents/Thèse/benchmark"
 sys.path.append(global_path)
 
 sys.path.append(f"{global_path}/SpecAware")
@@ -496,19 +497,19 @@ def create_fm(fm_name, Y, c=None, n_features=1, size="base", version="v2", use_c
 
         if size == "small":
             fm = spec_vit.SpecViTSmall()
-            checkpoint = torch.load(f"{path}/spectral_earth/data/data/spec_ViTs_mae.pth", map_location=dev)
+            checkpoint = torch.load(f"{path}/pretrained_models/SpectralEarth/spec_ViTs_mae.pth", map_location=dev)
 
         elif size == "base":
             fm = spec_vit.SpecViTBase()
-            checkpoint = torch.load(f"{path}/spectral_earth/data/data/spec_ViTb_mae.pth", map_location=dev)
+            checkpoint = torch.load(f"{path}/pretrained_models/SpectralEarth/spec_ViTb_mae.pth", map_location=dev)
 
         elif size == "large":
             fm = spec_vit.SpecViTLarge()
-            checkpoint = torch.load(f"{path}/spectral_earth/data/data/spec_ViTl_mae.pth", map_location=dev)
+            checkpoint = torch.load(f"{path}/pretrained_models/SpectralEarth/spec_ViTl_mae.pth", map_location=dev)
 
         elif size == "huge":
             fm = spec_vit.SpecViTHuge()
-            checkpoint = torch.load(f"{path}/spectral_earth/data/data/spec_ViTh_mae.pth", map_location=dev)
+            checkpoint = torch.load(f"{path}/pretrained_models/SpectralEarth/spec_ViTh_mae.pth", map_location=dev)
 
         fm.load_state_dict(checkpoint, strict=False)
 
@@ -523,8 +524,7 @@ def create_fm(fm_name, Y, c=None, n_features=1, size="base", version="v2", use_c
         fm.load_state_dict(checkpoint, strict=False)
     
     else:
-        raise("Fm name is not known, use DOFA, HyperFree, HyperSIGMA, SpecViT, SpecRnDino or SpecRnMoco")
-        return
+        raise(f"Fm name {fm_name} is not known, use DOFA, HyperFree, HyperSIGMA, SpecViT, SpecRnDino or SpecRnMoco")
     
     return fm, Y, new_H
 
@@ -543,6 +543,18 @@ def reshape_Y(fm_name, Y, new_H=None, A=None):
             A = A[:,:,:new_H, :new_H]
     
     elif fm_name == "ImageEncoderViT" or fm_name == "HyperFree":
+
+        if Y.shape[-1] < new_H:
+            Y = F.interpolate(Y, size=(new_H,new_H))
+        Y = Y[:,:,:new_H, :new_H]
+        
+        if A != None:
+            if A.shape[-1] < new_H:
+                A = F.interpolate(A, size=(new_H,new_H))
+            A = A[:,:,:new_H, :new_H]
+    
+    elif fm_name == "SpecAware" or fm_name == "MaskedHSIAutoencoderViT":
+        new_H = 224
 
         if Y.shape[-1] < new_H:
             Y = F.interpolate(Y, size=(new_H,new_H))
@@ -767,7 +779,7 @@ class Decoder(nn.Module):
             return self.decoder.weight.data.squeeze([2, 3])
 
 class Unmixing_from_features0(nn.Module):
-    def __init__(self, D, B, c, H=224, alpha=None, n_features=1, re_down=False):
+    def __init__(self, D, B, c, H=224, alpha=None, n_features=1):
         """
         Args:
             D (int): The embed_dim
@@ -787,7 +799,21 @@ class Unmixing_from_features0(nn.Module):
         self.n_features = n_features
 
         # Upsampling features
-        self.upsample = nn.Linear(self.n_features*(self.alpha**2), self.H**2)
+        # self.upsample = nn.Linear(self.n_features*(self.alpha**2), self.H**2)
+        # self.upsample = nn.Sequential(upsamplers.UpsampleBlock(c,c), upsamplers.UpsampleBlock(c,c), upsamplers.UpsampleBlock(c,c), upsamplers.UpsampleBlock(c,c))
+        self.upsample = upsamplers.FiLMUpsampler(c, B, alpha, H)
+        # upsample_factor = H // alpha  # e.g., 224 // 14 = 16
+        # self.upsample = nn.Sequential(
+        #     nn.ConvTranspose2d(
+        #         in_channels=c,
+        #         out_channels=c,
+        #         kernel_size=7,
+        #         stride=13,
+        #         padding=0,
+        #         dilation=9,
+        #         output_padding=0,
+        #     )
+        # )
 
         self.abundance_estimator = nn.Sequential(
             nn.Conv2d(D, c, kernel_size=1, bias=False),
@@ -835,7 +861,7 @@ class Unmixing_from_features0(nn.Module):
         else:
             return loss
 
-    def get_abundances(self, features):
+    def get_abundances(self, features, Y):
 
         features = utils.oneD_to_2d(features)
         # features = (features - features.min())
@@ -843,8 +869,9 @@ class Unmixing_from_features0(nn.Module):
 
         A_hat_lr = self.abundance_estimator(features.unsqueeze(0))
         A_hat_lr = self.sum_to_one(A_hat_lr)
-        A_hat = self.upsample(A_hat_lr.reshape(1, self.c, self.n_features*self.alpha*self.alpha))
-        A_hat = utils.oneD_to_2d(A_hat)
+        # A_hat = self.upsample(A_hat_lr.reshape(1, self.c, self.n_features*self.alpha*self.alpha))
+        # A_hat = utils.oneD_to_2d(A_hat)
+        A_hat = self.upsample(A_hat_lr, Y)
         A_hat = self.sum_to_one(A_hat)
 
         return A_hat, A_hat_lr
@@ -852,8 +879,8 @@ class Unmixing_from_features0(nn.Module):
     def get_endmembers(self):
         return self.decoder.get_endmembers()
     
-    def forward(self, features):
-        A_hat, A_hat_lr = self.get_abundances(features)
+    def forward(self, features, Y):
+        A_hat, A_hat_lr = self.get_abundances(features, Y)
         Y_hat = self.decoder(A_hat)
         E_hat = self.decoder.get_endmembers()
 
@@ -887,9 +914,9 @@ class Unmixing_from_features(nn.Module):
                 nn.Linear(int(D/c), self.H**2)
             )
         elif not self.hypersig:
-            self.upsample = nn.Sequential(
-                nn.Linear(self.n_features*(self.alpha**2), self.H**2)
-            )
+            self.upsample = nn.Linear(self.n_features*(self.alpha**2), self.H**2, bias=False)
+            # self.upsample = upsamplers.FiLMUpsampler(D, D, B, alpha, H)
+
         else:
             pass
 
@@ -930,12 +957,10 @@ class Unmixing_from_features(nn.Module):
             nn.init.kaiming_normal_(m.weight.data)
 
     @staticmethod
-    def loss(Y_gt, Y_hat, A_hat, E_hat, features_hr, features_lr, W_sad=1, W_ab=0.6, W_tv_e=3e-5, W_tv_a=0, W_mse=0.09, W_e=0, W_feat=0, W_tv_feat=0, hypersigma=False, return_losses=False):
+    def loss(Y_gt, Y_hat, A_hat, E_hat, features_hr=None, features_lr=None, W_sad=1, W_ab=0.6, W_tv_e=3e-5, W_tv_a=0, W_mse=0.09, W_e=0, W_feat=0, W_tv_feat=0, hypersigma=False, return_losses=False):
         sad = losses.SADLoss()
         tv = losses.TVLoss(reduction="mean")
         mse = nn.MSELoss(reduction='sum')
-        l1 = nn.L1Loss()
-        downsample = nn.AdaptiveAvgPool2d(features_lr[0].shape)
         
         loss_sad = W_sad * sad(Y_gt, Y_hat)
         loss_ab = W_ab * torch.sqrt(A_hat).mean()
@@ -959,23 +984,27 @@ class Unmixing_from_features(nn.Module):
 
         """Feature regularisation"""
 
-        features_down = utils.normalize(downsample(features_hr))
-        loss_features = W_feat * l1(features_down, utils.normalize(features_lr))
-        # print(loss_features)
-        # features_lr_flat = features_lr.view(features_lr.shape[0], -1)
-        # features_down_flat = features_down.view(features_lr.shape[0], -1)
-        # features_lr_norm = F.normalize(features_lr_flat, p=2, dim=1)
-        # features_down_norm = F.normalize(features_down_flat, p=2, dim=1)
-        # correlation = torch.mm(features_lr_norm, features_down_norm.t())
-        # target = torch.eye(features_lr.shape[0], device=features_lr.device)
-        # loss_features = W_feat * F.mse_loss(correlation, target)
-        # loss_features = torch.norm(torch.mm(upsample.weight, upsample.weight.t()) - torch.eye(H**2, device=upsample.weight.device))
+        if features_hr != None:
+            l1 = nn.L1Loss()
+            downsample = nn.AdaptiveAvgPool2d(features_lr[0].shape)
+            features_down = utils.normalize(downsample(features_hr))
+            loss_features = W_feat * l1(features_down, utils.normalize(features_lr))
+            print(loss_features)
+            features_lr_flat = features_lr.view(features_lr.shape[0], -1)
+            features_down_flat = features_down.view(features_lr.shape[0], -1)
+            features_lr_norm = F.normalize(features_lr_flat, p=2, dim=1)
+            features_down_norm = F.normalize(features_down_flat, p=2, dim=1)
+            correlation = torch.mm(features_lr_norm, features_down_norm.t())
+            target = torch.eye(features_lr.shape[0], device=features_lr.device)
+            loss_features = W_feat * F.mse_loss(correlation, target)
+            # loss_features = torch.norm(torch.mm(upsample.weight, upsample.weight.t()) - torch.eye(H**2, device=upsample.weight.device))
 
-        # loss_features = W_feat * l1(features_down, features_lr)
+            loss_features = W_feat * l1(features_down, features_lr)
         
-        loss_tv_feat = 0 #W_tv_feat * tv(features_hr.unsqueeze(0))
+        else:
+            loss_features = 0
 
-        loss = loss_sad + loss_ab + loss_tv_e + loss_tv_a + loss_mse + loss_norm_e + loss_features + loss_tv_feat
+        loss = loss_sad + loss_ab + loss_tv_e + loss_tv_a + loss_mse + loss_norm_e + loss_features
 
         if return_losses:
             return loss, loss_sad, loss_ab, loss_tv_e, loss_tv_a, loss_mse, loss_norm_e
@@ -1009,7 +1038,7 @@ class Unmixing_from_features(nn.Module):
 
         return loss, loss_re, loss_sad, loss_mse
     
-    def get_abundances(self, features):
+    def get_abundances(self, features, Y):
 
         if self.use_cls:
             features_2d = features.reshape(self.c, int(self.D/self.c))
@@ -1026,7 +1055,8 @@ class Unmixing_from_features(nn.Module):
 
         else:
             features = features.reshape(self.D, self.n_features*self.alpha*self.alpha)
-            features_up = self.upsample(features)
+            # features = utils.oneD_to_2d(features).unsqueeze(0)
+            features_up = self.upsample(features)#, Y)
             features_up = features_up.view(
                 1, self.D, self.H, self.H
             )
@@ -1039,8 +1069,8 @@ class Unmixing_from_features(nn.Module):
     def get_endmembers(self):
         return self.decoder.get_endmembers()
     
-    def forward(self, features):
-        A_hat = self.get_abundances(features)
+    def forward(self, features, Y):
+        A_hat = self.get_abundances(features, Y)
         Y_hat = self.decoder(A_hat)
         E_hat = self.decoder.get_endmembers()
 

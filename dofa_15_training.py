@@ -22,31 +22,30 @@ from src.models import models
 
 import logging
 
-def instantiate_model(Y, wavelengths, version="v2", size="large"):
+def instantiate_model(model, Y, wavelengths, version="v1", size="large"):
 
-    fm, Y_init_fm, new_H = rsfm.create_fm("DOFA", Y, size=size, version=version, path=global_path)
-    features_dofa = rsfm.get_dofa_features(fm, Y_init_fm, wavelengths)
-    D = int(features_dofa.shape[0])
-    alpha = int(features_dofa.shape[1]**0.5)
+    fm, Y_init_fm, new_H = rsfm.create_fm(model, Y, size=size, version=version, path=global_path)
+    _, features = rsfm.extract_f(fm, Y_init_fm, new_H, wavelengths)
+    D = int(features.shape[0])
+    alpha = int(features.shape[1]**0.5)
 
     return fm, Y_init_fm, new_H, D, alpha
 
-def run_one_xp(i_dataset, i_xp, n_train, dataset, mse_tensor, sad_tensor, Y_init, A_init, E_init, H, wavelengths, dev, version="v2", size="large"):
+def run_one_xp(model, i_dataset, i_xp, n_train, dataset, mse_tensor, sad_tensor, Y_init, A_init, E_init, H, wavelengths, dev, version="v2", size="large"):
 
     Y_init = Y_init.to(dev)
     A_init = A_init.to(dev)
     E_init = E_init.to(dev)
     B, c = E_init.shape
 
-    fm, Y_init_fm, new_H, D, alpha = instantiate_model(Y_init, wavelengths, version, size)
+    fm, Y_init_fm, new_H, D, alpha = instantiate_model(model, Y_init, wavelengths, version, size)
     E_hats, A_hats = torch.zeros(n_train, B, c), torch.zeros(n_train, c, new_H, new_H)
     loader, _, _ = utils.create_dataloader(dataset, patch_size=H, dev=dev, path=global_path)
 
     for i in range(n_train): 
         print(f"training {i}/{n_train}")
 
-        model = rsfm.Unmixing_from_features(D=D, alpha=alpha, H=new_H, B=B, c=c)
-        # model = torch.compile(model)
+        model = rsfm.Unmixing_from_features0(D=D, alpha=alpha, H=new_H, B=B, c=c)
         model.apply(model.weights_init)
         model = models.init_decoder_weights(model, Y_init_fm/Y_init_fm.max(), c, is_unmixer=True)
 
@@ -57,7 +56,7 @@ def run_one_xp(i_dataset, i_xp, n_train, dataset, mse_tensor, sad_tensor, Y_init
             paramwise_cfg=dict(num_layers=12, layer_decay_rate=0.9, ))
         optimizer = build_optim_wrapper(model, optim_wrapper)
 
-        for epoch in range(epochs):
+        for _ in range(epochs):
 
             for Y, _, _ in loader:
             
@@ -66,12 +65,12 @@ def run_one_xp(i_dataset, i_xp, n_train, dataset, mse_tensor, sad_tensor, Y_init
                 Y = utils.oneD_to_2d(Y).to(dev)
 
                 Y_fm, features = rsfm.extract_f(fm, Y, new_H, wavelengths)
-                E_hat, A_hat, Y_hat = model(features)
+                E_hat, A_hat, Y_hat, A_hat_lr = model(features)
             
-                features_lr = utils.oneD_to_2d(features)
-                features_hr = utils.oneD_to_2d(model.upsample(features))
-
-                loss = model.loss(Y_fm, Y_hat, A_hat, E_hat, features_hr, features_lr)
+                # features_lr = utils.oneD_to_2d(features)
+                # features_hr = utils.oneD_to_2d(model.upsample(features))
+                # loss = model.loss(Y_fm, Y_hat, A_hat, E_hat, features_hr, features_lr)
+                loss = model.loss(Y_fm, Y_hat, A_hat, E_hat)
 
                 loss.backward()
                 nn.utils.clip_grad_norm_(model.parameters(), max_norm=10, norm_type=1)
@@ -80,26 +79,17 @@ def run_one_xp(i_dataset, i_xp, n_train, dataset, mse_tensor, sad_tensor, Y_init
                 with torch.no_grad():
                     constraints = models.weightConstraint()
                     model.decoder.apply(constraints)
-
-                # del loss, Y, E, A, features, E_hat, A_hat, Y_hat, constraints
-                # torch.cuda.synchronize()
-                # torch.cuda.empty_cache()
-                # gc.collect()
                     
         model.eval()
         
         with torch.no_grad():
             _, A_init_fm, features = rsfm.extract_f(fm, Y_init, new_H, wavelengths, A_init)
-            E_hat, A_hat, _ = model(features)
+            E_hat, A_hat, _, A_hat_lr = model(features)
             sad, _, mse = plots.compute_metrics_and_plot(E_hat, A_hat, A_init_fm, E_init, normalize_E=True, normalize_A=True, return_results=True, plot_E=False, plot_A=False)
             print(f"Current SAD = {format(sad, '.3f')}, NMSE = {format(mse, '.3f')}")
 
         E_hats[i] = E_hat
         A_hats[i] = A_hat.squeeze(0)
-
-        # del sad, mse, E_hat1, A_hat1, optimizer
-        # gc.collect()
-        # torch.cuda.empty_cache()
 
     E_hat_m = torch.mean(E_hats, dim=0)
     A_hat_m = torch.mean(A_hats, dim=0)
@@ -122,12 +112,11 @@ def main(args, dev):
     n_train = args.n_train
     size = args.size
     version = args.version
+    model = args.model
 
-    print(f"Running {n_train} xp of {n_train} trainings of DOFA {version}-{size}")
+    print(f"Running {n_train} xp of {n_train} trainings of {model} {version}-{size}")
 
-    # datasets = ["apex", "jasper", "urban", "samson", "urban4"]
-    datasets = ["apex"]
-    # datasets = ["urban4"]
+    datasets = ["jasper", "apex"]
 
     # shape (n_datasets, step, n_xp)
     mse_tensor = torch.zeros(len(datasets), n_xp)
@@ -157,18 +146,15 @@ def main(args, dev):
         for i_xp in range(n_xp):
 
             print(f"------ Running {i_xp+1}th experiment ------")
-            mse_tensor, sad_tensor = run_one_xp(i_dataset, i_xp, n_train, dataset, mse_tensor, sad_tensor, Y_init, A_init, E_init, H, wavelengths, dev, version, size)
-            torch.cuda.synchronize()
-            torch.cuda.empty_cache()
-            gc.collect()
+            mse_tensor, sad_tensor = run_one_xp(model, i_dataset, i_xp, n_train, dataset, mse_tensor, sad_tensor, Y_init, A_init, E_init, H, wavelengths, dev, version, size)
         
         mse = mse_tensor[i_dataset]
         sad = sad_tensor[i_dataset]
         
-        wandb.log({f"{dataset}_DOFA_MSE_mean": torch.mean(mse)})
-        wandb.log({f"{dataset}_DOFA_MSE_std": torch.std(mse)})
-        wandb.log({f"{dataset}_DOFA_SAD_mean": torch.mean(sad)})
-        wandb.log({f"{dataset}_DOFA_SAD_std": torch.std(sad)})
+        wandb.log({f"{dataset}_{model}_MSE_mean": torch.mean(mse)})
+        wandb.log({f"{dataset}_{model}_MSE_std": torch.std(mse)})
+        wandb.log({f"{dataset}_{model}_SAD_mean": torch.mean(sad)})
+        wandb.log({f"{dataset}_{model}_SAD_std": torch.std(sad)})
 
 if __name__ == "__main__":
 
@@ -179,6 +165,7 @@ if __name__ == "__main__":
     parser.add_argument("--n_train", default=15, type=int)
     parser.add_argument("--size", default="large", type=str)
     parser.add_argument("--version", default="v2", type=str)
+    parser.add_argument("--model", default="DOFA", type=str)
     args = parser.parse_args()
 
     if not torch.cuda.is_available():
@@ -189,7 +176,7 @@ if __name__ == "__main__":
         dev = "cuda:0"
         torch.set_default_device(dev)
         
-    run = wandb.init(project=f"DOFA_training")
+    run = wandb.init(project=f"{args.model}_training")
     
     print(f"Starting project on dev: {dev}")
     
