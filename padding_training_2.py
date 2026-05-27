@@ -18,6 +18,7 @@ from src.utils import utils
 from src.utils import plots
 from src.models import models
 from src.models import foundation_models as rsfm
+from src.models import unmixers as unmx
 
 def main(dev):
     datasets = ["samson", "jasper", "apex", "urban"]
@@ -60,7 +61,7 @@ def main(dev):
             constructor='LayerDecayOptimizerConstructor_ViT',
             paramwise_cfg=dict(num_layers=12, layer_decay_rate=0.9))
             
-        model = rsfm.Unmixing_from_features2(D=D, alpha=alpha, H=new_H, B=B, c=c, n_features=1)
+        model = unmx.UnmixingFromUpFeat(D=D, alpha=alpha, H=new_H, B=B, c=c, n_features=1)
         model.apply(model.weights_init)
         model = models.init_decoder_weights(model, Y_224/Y_224.max(), c, is_unmixer=True, normalize=False)
         model = model.to(dev)

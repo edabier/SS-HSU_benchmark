@@ -17,6 +17,7 @@ from mmcv__custom import layer_decay_optimizer_constructor_vit
 from src.utils import utils
 from src.utils import plots
 from src.models import foundation_models as rsfm
+from src.models import unmixers as unmx
 from src.models import models
 
 import logging
@@ -101,7 +102,7 @@ def instantiate_models(pad, shift, Y_init, D, alpha, new_H, B, c, dev):
         paramwise_cfg=dict(num_layers=12, layer_decay_rate=0.9))
 
     for i in range(n_models):
-        model = torch.compile(rsfm.Unmixing_from_features(D=D, alpha=alpha, H=new_H, B=B, c=c, n_features=1, use_cls=False, is_cnnaeu=False))
+        model = torch.compile(unmx.UnmixingFromFeatures(D=D, alpha=alpha, H=new_H, B=B, c=c))
         model.apply(model.weights_init)
 
         x_i = (i//n_rows)

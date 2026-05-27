@@ -2,13 +2,12 @@
 #SBATCH --job-name=dofa_unmix
 # SBATCH --output=%x_%j.out      # %x for job name, %j for job ID
 #SBATCH --error=%x_%j.err
-#SBATCH -p V100-32GB
+#SBATCH -p V100
 #SBATCH --nodes=1
 #SBATCH --mem=30G
 #SBATCH --exclude=node42,node43
 #SBATCH --ntasks=1
 #SBATCH --gpus-per-task=1
-#SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=4
 #SBATCH --time=24:00:00
 
@@ -26,13 +25,15 @@ N_TRAIN=15
 VERSION="v1"
 SIZE="large"
 MODEL="DOFA"
+UPSAMPLER="Features fusion"
 
 # Execute the Python script with specific arguments
 # srun python /home/ids/edabier/HSU/SS-HSU_benchmark/fm_unmixing.py --n_xp $N_XP
 # srun python /home/ids/edabier/HSU/SS-HSU_benchmark/dofa_n_training.py
 # srun python /home/ids/edabier/HSU/SS-HSU_benchmark/padding_training_2.py
-srun python /home/ids/edabier/HSU/SS-HSU_benchmark/dofa_15_training.py --n_xp $N_XP --n_train $N_TRAIN --version $VERSION --size $SIZE --model $MODEL
+# srun python /home/ids/edabier/HSU/SS-HSU_benchmark/dofa_15_training.py --n_xp $N_XP --n_train $N_TRAIN --version $VERSION --size $SIZE --model $MODEL
 # srun python /home/ids/edabier/HSU/SS-HSU_benchmark/dofa_shift_15_training.py --n_xp $N_XP --n_train $N_TRAIN --version $VERSION --size $SIZE
+srun python /home/ids/edabier/HSU/SS-HSU_benchmark/train_upsampler.py --upsampler $UPSAMPLER
 
 # Retrieve and log job information
 LOG_FILE="job_tracking.log"

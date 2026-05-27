@@ -18,11 +18,11 @@ echo "Job started at: $(date)"
 
 # Activate the environment
 eval "$(conda shell.bash hook)"
-conda activate hsu-env
+conda activate hsu
 
 # Execute the Python script with specific arguments
-srun python /home/ids/edabier/HSU/my_HyperSIGMA/HyperspectralUnmixing/trainval.py
-# srun python /home/ids/edabier/HSU/HyperSIGMA/HyperspectralUnmixing/trainval.py
+# srun python /home/ids/edabier/HSU/my_HyperSIGMA/HyperspectralUnmixing/trainval.py
+srun python /home/ids/edabier/HSU/HyperSIGMA/HyperspectralUnmixing/trainval.py
 
 # Retrieve and log job information
 LOG_FILE="job_tracking.log"

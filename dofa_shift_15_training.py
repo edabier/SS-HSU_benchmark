@@ -18,6 +18,7 @@ from mmcv__custom import layer_decay_optimizer_constructor_vit
 from src.utils import utils
 from src.utils import plots
 from src.models import foundation_models as rsfm
+from src.models import unmixers as unmx
 from src.models import models
 
 import logging
@@ -77,7 +78,7 @@ def run_one_xp(i_dataset, i_xp, n_train, mse_tensor, sad_tensor, Y_init_fm, A_in
     for i in range(n_train): 
         print(f"training {i}/{n_train}")
 
-        model = rsfm.Unmixing_from_features2(D=D, H=new_H, B=B, c=c)
+        model = unmx.UnmixingFromUpFeat(D=D, H=new_H, B=B, c=c)
         model.apply(model.weights_init)
         model = models.init_decoder_weights(model, Y_init_fm/Y_init_fm.max(), c, is_unmixer=True, normalize=False)
         model = model.to(dev)

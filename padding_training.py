@@ -17,6 +17,7 @@ from mmcv__custom import layer_decay_optimizer_constructor_vit
 from src.utils import utils
 from src.utils import plots
 from src.models import foundation_models as rsfm
+from src.models import unmixers as unmx
 from src.models import models
 
 import logging
@@ -28,7 +29,7 @@ def train_model(Y, fm, B, c, D, alpha, new_H, wavelengths, dev):
         constructor='LayerDecayOptimizerConstructor_ViT',
         paramwise_cfg=dict(num_layers=12, layer_decay_rate=0.9))
     
-    model = rsfm.Unmixing_from_features(D=D, alpha=alpha, H=new_H, B=B, c=c, n_features=1, use_cls=False, is_cnnaeu=False)
+    model = unmx.UnmixingFromFeatures(D=D, alpha=alpha, H=new_H, B=B, c=c)
     compiled_model = torch.compile(model)
     compiled_model.apply(model.weights_init)
     compiled_model = models.init_decoder_weights(compiled_model, Y/Y.max(), c, is_unmixer=True, normalize=False)
