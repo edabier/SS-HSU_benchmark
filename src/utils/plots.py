@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import matplotlib.pyplot as plt
 import os
+from sklearn.decomposition import PCA
 
 import src.utils.losses as losses
 import src.utils.utils as utils
@@ -203,13 +204,35 @@ def compute_metrics_and_plot(E_hat=None, A_hat=None, A_gt=None, E_gt=None, model
     if return_results:
         return total_sad, total_sad_a, total_mse
     
+def plot_pca_features(features, title=None):
+    
+    alpha = int(features.shape[1]**0.5)
+    X = features.T
+
+    pca = PCA(n_components=3)
+    X_pca = pca.fit_transform(X.detach().cpu().numpy())
+
+    X_pca_reshaped = X_pca.reshape(alpha, alpha, 3).transpose(2, 0, 1)
+    X_normalized = (X_pca_reshaped - X_pca_reshaped.min()) / (X_pca_reshaped.max() - X_pca_reshaped.min())
+
+    im = plt.imshow(X_normalized.transpose(1, 2, 0))
+    plt.axis('off')
+    
+    if title != None:
+        plt.title(title)
+    else:
+        plt.title("PCA reduced features")
+    plt.show()
+    
 def plot_hsi(Y, n_channels=4, rgb=False, title=None, channels=None, cmap="viridis"):
     """
     Displays n channels of the input HSI
-    Must be of shape (batch, B, H, W) or (B, H, W)
+    Must be of shape (batch, B, H, W) or (B, H, W), or (B, H*W)
     """
     if Y.dim() > 3:
         Y = Y.squeeze(0)
+    elif Y.dim() == 2:
+        Y = utils.oneD_to_2d(Y)
     B, H, W = Y.shape
 
     if channels != None:

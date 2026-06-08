@@ -623,27 +623,40 @@ def extract_f(fm, Y, new_H, wavelengths, A=None, use_cls=False):
         return Y, features
 
 @torch.no_grad()
-def build_positional_basis(fm, B, H, wavelengths, svd_components=50):
-    noise_img = torch.rand(1, B, H, H)
+def build_positional_basis(fm, B, H, wavelengths, svd_components=50, noise=True):
+
+    if noise:
+        noise_img = torch.rand(1, B, H, H)
+    else:
+        noise_img = torch.ones(1, B, H, H)
+        
     _, noise_features = extract_f(fm, noise_img, H, wavelengths)
+    noise_features = utils.oneD_to_2d(noise_features)
+
     noise_features = F.normalize(noise_features, p=2, dim=1)
-    # E = einops.rearrange(noise_features, 'c h w -> c (h w)')
+    E = einops.rearrange(noise_features, 'c h w -> c (h w)')
 
-    E = noise_features - noise_features.mean(dim=1, keepdim=True)
-    # E = E / (E.std(dim=1, keepdim=True) + 1e-6)  # Normalize
+    E = E - E.mean(dim=1, keepdim=True)
 
-    U, _, _ = torch.linalg.svd(E, full_matrices=False)
+    U, S, _ = torch.linalg.svd(E, full_matrices=False)
+
+    explained_variance = (S ** 2) / (S ** 2).sum()
+    cumulative_variance = explained_variance.cumsum(dim=0)
+
+    plt.plot(cumulative_variance.detach().cpu())
+    plt.show()
 
     return U[:, :svd_components].contiguous()
 
-def debias_features(features, fm, B, H, wavelengths, svd_components=50):
+def debias_features(features, fm, B, H, wavelengths, svd_components=50, noise=True):
     """Project features onto the orthogonal complement of the positional subspace."""
     D, alpha, _ = features.shape
     
     features = F.normalize(features, p=2, dim=1)
-    X = features.reshape(D, alpha * alpha)
+    X = features.flatten(1)
 
-    basis = build_positional_basis(fm, B, H, wavelengths, svd_components).to(X.device)
+    basis = build_positional_basis(fm, B, H, wavelengths, svd_components, noise).to(X.device)
+    basis = basis.flatten(1)
 
     P_perp = torch.eye(D, device=X.device, dtype=X.dtype) - basis @ basis.T + 1e-6 * torch.eye(D, device=X.device, dtype=X.dtype)
     X_deb = torch.matmul(P_perp.unsqueeze(0), X).reshape(D, alpha, alpha)

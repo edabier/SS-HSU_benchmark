@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from src.models import upsamplers
 from src.models.foundation_models import Sum_to_one, Decoder
@@ -7,7 +8,7 @@ from src.utils import losses
 from src.utils import utils
 
 class UnmixingFromFeatures(nn.Module):
-    def __init__(self, D, B, c, H=224, alpha=None, n_features=1, upsampler="Linear"):
+    def __init__(self, D, B, c, H=224, alpha=None, n_features=1, upsampler="Linear", channel_selector=False):
         """
         Upsamples low res features then estimates A_hat
         
@@ -34,12 +35,14 @@ class UnmixingFromFeatures(nn.Module):
             self.upsample = nn.Linear(self.alpha**2, self.H**2, bias=False)
         elif upsampler == "FiLM":
             self.upsample = upsamplers.FiLMUpsampler(self.n_features*D, self.n_features*D, B, alpha, H, group_channels=False)
-        elif upsampler == "FiLM grouped":
+        elif upsampler == "FiLM_grouped":
             self.upsample = upsamplers.FiLMUpsampler(self.n_features*D, self.n_features*D, B, alpha, H, group_channels=True)
-        elif upsampler == "Features fusion":
-            self.upsample = upsamplers.FusedFeaturesUpsampler(self.n_features*D, B, alpha, H)
+        elif upsampler == "Features_fusion":
+            self.upsample = upsamplers.FeaturesFusionUpsampler(self.n_features*D, B, alpha, H, group_channels=False)
+        elif upsampler == "Features_fusion_grouped":
+            self.upsample = upsamplers.FeaturesFusionUpsampler(self.n_features*D, B, alpha, H, group_channels=True)
         else:
-            assert "Unknown upsampler, must be one of [Linear, FiLM, FiLM grouped, Features fusion]"
+            assert "Unknown upsampler, must be one of [Linear, FiLM, FiLM_grouped, Features_fusion, Features_fusion_grouped]"
 
         # Upsampled features to abundances
         self.abundance_estimator = nn.Sequential(
@@ -48,6 +51,15 @@ class UnmixingFromFeatures(nn.Module):
             nn.BatchNorm2d(c),
             nn.Dropout(0.2)
         )
+
+        self.smooth = nn.Sequential(
+            nn.Conv2d(c, c, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1)),
+            nn.Softmax(dim=1),
+        )
+
+        if channel_selector:
+        # self.channel_selector = nn.Parameter(torch.ones(self.n_features*self.D))
+            self.channel_selector = nn.Parameter(torch.ones(self.n_features))
 
         self.sum_to_one = Sum_to_one()
         self.decoder = Decoder(B=B, c=c)
@@ -58,7 +70,7 @@ class UnmixingFromFeatures(nn.Module):
             nn.init.kaiming_normal_(m.weight.data)
 
     @staticmethod
-    def loss(Y_gt, Y_hat, A_hat, E_hat, features_hr=None, features_lr=None, W_sad=1, W_ab=0.6, W_tv_e=3e-5, W_tv_a=0, W_mse=0.09, W_e=0, W_feat=0, W_tv_feat=0, hypersigma=False, return_losses=False):
+    def loss(Y_gt, Y_hat, A_hat, E_hat, features_hr=None, features_lr=None, channel_selector=None, W_sad=1, W_ab=0.6, W_tv_e=3e-5, W_tv_a=0, W_mse=0.09, W_e=0, W_feat=0, W_tv_feat=0, hypersigma=False, return_losses=False):
         sad = losses.SADLoss()
         tv = losses.TVLoss(reduction="mean")
         mse = nn.MSELoss(reduction='sum')
@@ -88,24 +100,17 @@ class UnmixingFromFeatures(nn.Module):
         if features_hr != None:
             l1 = nn.L1Loss()
             downsample = nn.AdaptiveAvgPool2d(features_lr[0].shape)
-            features_down = utils.normalize(downsample(features_hr))
-            loss_features = W_feat * l1(features_down, utils.normalize(features_lr))
-            print(loss_features)
-            features_lr_flat = features_lr.view(features_lr.shape[0], -1)
-            features_down_flat = features_down.view(features_lr.shape[0], -1)
-            features_lr_norm = F.normalize(features_lr_flat, p=2, dim=1)
-            features_down_norm = F.normalize(features_down_flat, p=2, dim=1)
-            correlation = torch.mm(features_lr_norm, features_down_norm.t())
-            target = torch.eye(features_lr.shape[0], device=features_lr.device)
-            loss_features = W_feat * F.mse_loss(correlation, target)
-            # loss_features = torch.norm(torch.mm(upsample.weight, upsample.weight.t()) - torch.eye(H**2, device=upsample.weight.device))
+            features_down = downsample(features_hr)
 
-            loss_features = W_feat * l1(features_down, features_lr)
+            loss_features = W_feat * l1(utils.normalize(features_down), utils.normalize(features_lr))
         
         else:
             loss_features = 0
 
         loss = loss_sad + loss_ab + loss_tv_e + loss_tv_a + loss_mse + loss_norm_e + loss_features
+
+        if channel_selector != None:
+            loss += torch.linalg.norm(channel_selector, dim=0, ord=1)#/ len(channel_selector)
 
         if return_losses:
             return loss, loss_sad, loss_ab, loss_tv_e, loss_tv_a, loss_mse, loss_norm_e
@@ -114,18 +119,29 @@ class UnmixingFromFeatures(nn.Module):
 
     def get_abundances(self, features, Y):
 
+        if hasattr(self, "channem_selector"):
+            if len(self.channel_selector) == self.n_features:
+                weights = self.channel_selector.view(-1, 1, 1)
+                features = features.view(self.n_features, self.D, self.alpha**2)
+                features = features * weights
+                features = features.view(-1, self.alpha**2)
+            else:
+                weights = self.channel_selector.view(-1, 1)
+                features = features * weights
+
         if self.upsampler == "Linear":
-            features = features.reshape(self.n_features*self.D, self.alpha*self.alpha)
+            # features = features.reshape(self.n_features*self.D, self.alpha*self.alpha)
             features_up = self.upsample(features)
         else:
             features = utils.oneD_to_2d(features).unsqueeze(0)
             features_up = self.upsample(features, Y)
         features_up = features_up.view(
-            1, self.D, self.H, self.H
+            1, self.n_features*self.D, self.H, self.H
         )
         features_up = (features_up - features_up.mean())/ (1e-8 + features_up.std())
         A_hat = self.abundance_estimator(features_up)
         A_hat = self.sum_to_one(A_hat)
+        # A_hat = self.smooth(A_hat)
 
         return A_hat
     
@@ -164,22 +180,27 @@ class UnmixingFromFeatures2(nn.Module):
 
         # Upsampling features
         if upsampler == "Linear":
-            self.upsample = nn.Linear(self.n_features*(self.alpha**2), self.H**2, bias=False)
+            self.upsample = nn.Linear(self.alpha**2, self.H**2, bias=False)
         elif upsampler == "FiLM":
             self.upsample = upsamplers.FiLMUpsampler(c, c, B, alpha, H, group_channels=False)
-        elif upsampler == "FiLM grouped":
+        elif upsampler == "FiLM_grouped":
             self.upsample = upsamplers.FiLMUpsampler(c, c, B, alpha, H, group_channels=True)
-        elif upsampler == "Features fusion":
-            self.upsample = upsamplers.FusedFeaturesUpsampler(c, B, alpha, H)
+        elif upsampler == "Features_fusion":
+            self.upsample = upsamplers.FeaturesFusionUpsampler(c, B, alpha, H, group_channels=False)
+        elif upsampler == "Features_fusion_grouped":
+            self.upsample = upsamplers.FeaturesFusionUpsampler(c, B, alpha, H, group_channels=True)
         else:
-            assert "Unknown upsampler, must be one of [Linear, FiLM, FiLM grouped, Features fusion]"
+            assert "Unknown upsampler, must be one of [Linear, FiLM, FiLM_grouped, Features_fusion, Features_fusion_grouped]"
 
         self.abundance_estimator = nn.Sequential(
-            nn.Conv2d(D, c, kernel_size=1, bias=False),
+            nn.Conv2d(self.n_features*D, c, kernel_size=1, bias=False),
             nn.LeakyReLU(0.02),
             nn.BatchNorm2d(c),
             nn.Dropout(0.2)
         )
+
+        # self.channel_selector = nn.Parameter(torch.ones(self.n_features*self.D))
+        self.channel_selector = nn.Parameter(torch.ones(self.n_features))
 
         self.sum_to_one = Sum_to_one()
         self.decoder = Decoder(B=B, c=c)
@@ -190,7 +211,7 @@ class UnmixingFromFeatures2(nn.Module):
             nn.init.kaiming_normal_(m.weight.data)
 
     @staticmethod
-    def loss(Y_gt, Y_hat, A_hat, E_hat, alpha=None, Y_hat_lr=None, W_sad=1, W_ab=0.6, W_tv_e=3e-5, W_mse=0.09, return_losses=False):
+    def loss(Y_gt, Y_hat, A_hat, E_hat, channel_selector=None, alpha=None, Y_hat_lr=None, W_sad=1, W_ab=0.6, W_tv_e=3e-5, W_mse=0.09, return_losses=False):
         sad = losses.SADLoss()
         mse = nn.MSELoss(reduction='sum')
 
@@ -215,24 +236,34 @@ class UnmixingFromFeatures2(nn.Module):
 
         loss = loss_sad + loss_ab + loss_tv_e + loss_mse + loss_re_down
 
+        if channel_selector != None:
+            loss += torch.linalg.norm(channel_selector, dim=0, ord=1)#/ len(channel_selector)
+
         if return_losses:
             return loss, loss_sad, loss_ab, loss_tv_e, loss_mse
         else:
             return loss
 
     def get_abundances(self, features, Y):
+
+        if len(self.channel_selector) == self.n_features:
+            weights = self.channel_selector.view(-1, 1, 1)
+            features = features.view(self.n_features, self.D, self.alpha**2)
+            features = features * weights
+            features = features.view(-1, self.alpha**2)
+        else:
+            weights = self.channel_selector.view(-1, 1)
+            features = features * weights
         
+        features = utils.oneD_to_2d(features)
+        A_hat_lr = self.abundance_estimator(features.unsqueeze(0))
+        A_hat_lr = self.sum_to_one(A_hat_lr)
+
         if self.upsampler == "Linear":
-            features = features.reshape(self.D, self.n_features*self.alpha*self.alpha)
-            features = utils.oneD_to_2d(features)
-            A_hat_lr = self.abundance_estimator(features.unsqueeze(0))
-            A_hat_lr = self.sum_to_one(A_hat_lr)
-            A_hat = self.upsample(A_hat_lr.reshape(1, self.c, self.n_features*self.alpha*self.alpha))
+            A_hat_lr = A_hat_lr.reshape(1, self.c, self.alpha*self.alpha)
+            A_hat = self.upsample(A_hat_lr)
             A_hat = utils.oneD_to_2d(A_hat)
         else:
-            features = utils.oneD_to_2d(features).unsqueeze(0)
-            A_hat_lr = self.abundance_estimator(features)
-            A_hat_lr = self.sum_to_one(A_hat_lr)
             A_hat = self.upsample(A_hat_lr, Y)
             
         A_hat = self.sum_to_one(A_hat)
