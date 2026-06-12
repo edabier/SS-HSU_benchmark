@@ -621,6 +621,41 @@ def extract_f(fm, Y, new_H, wavelengths, A=None, use_cls=False):
         return Y, A, features
     else:
         return Y, features
+    
+def upsample_features(fm, Y, wavelengths, new_H, D, alpha):
+    """
+    Uses shifts to extract varying features and upsample features
+
+    Args:
+        fm : instance of the foundation model to extract features with
+        Y : the input HSI from which to extract high resolution features (of shape (batch, B, H, W))
+        wavelengths (list) : the list of the input HSI wavelengths
+        new_H (int) : the fm's image size
+        D (int) : the embed dimension of the fm
+        alpha (int) : the fm's feature size
+    """
+    patch = new_H//alpha
+    padding = patch//2
+    x_new = torch.linspace(0, new_H - 1, new_H)
+    grid_y, grid_x = torch.meshgrid(x_new, x_new, indexing='ij')
+    grid = torch.stack((grid_x, grid_y), dim=-1).unsqueeze(0)
+    grid = grid / torch.tensor([(new_H - 1) / 2, (new_H - 1) / 2]) - 1
+
+    Y_padded = F.pad(Y, pad=(padding, padding, padding, padding), mode="reflect")
+    feature_map = torch.zeros(1, D, new_H, new_H, device=dev)
+
+    with torch.no_grad():
+        for i in range(0, 2*padding):
+            for j in range(0, 2*padding):
+                
+                Y_crop = Y_padded[:, :, i:i+new_H, j:j+new_H]
+                Y_crop = Y_crop.to(dev)
+                _, features = extract_f(fm, Y_crop, new_H, wavelengths)
+
+                features = utils.oneD_to_2d(features)
+                feature_map[:,:, i::patch, j::patch] = features
+            
+    return feature_map
 
 @torch.no_grad()
 def build_positional_basis(fm, B, H, wavelengths, svd_components=50, noise=True):
@@ -640,11 +675,9 @@ def build_positional_basis(fm, B, H, wavelengths, svd_components=50, noise=True)
 
     U, S, _ = torch.linalg.svd(E, full_matrices=False)
 
-    explained_variance = (S ** 2) / (S ** 2).sum()
-    cumulative_variance = explained_variance.cumsum(dim=0)
-
-    plt.plot(cumulative_variance.detach().cpu())
-    plt.show()
+    # plt.plot(S.detach().cpu())
+    # plt.title("Singular values")
+    # plt.show()
 
     return U[:, :svd_components].contiguous()
 

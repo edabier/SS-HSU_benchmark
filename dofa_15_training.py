@@ -46,7 +46,7 @@ def run_one_xp(model, i_dataset, i_xp, n_train, dataset, mse_tensor, sad_tensor,
     for i in range(n_train): 
         print(f"training {i}/{n_train}")
 
-        model = unmx.UnmixingFromFeatures2(D=D, alpha=alpha, H=new_H, B=B, c=c)
+        model = unmx.UnmixingFromFeatures(D=D, alpha=alpha, H=new_H, B=B, c=c)
         model.apply(model.weights_init)
         model = models.init_decoder_weights(model, Y_init_fm/Y_init_fm.max(), c, is_unmixer=True)
 
@@ -65,12 +65,9 @@ def run_one_xp(model, i_dataset, i_xp, n_train, dataset, mse_tensor, sad_tensor,
 
                 Y = utils.oneD_to_2d(Y).to(dev)
 
-                Y_fm, features = rsfm.extract_f(fm, Y, new_H, wavelengths)
-                E_hat, A_hat, Y_hat, A_hat_lr = model(features)
+                Y_fm, features = rsfm.extract_f(fm, utils.standardise(Y), new_H, wavelengths)
+                E_hat, A_hat, Y_hat = model(features, Y_fm)
             
-                # features_lr = utils.oneD_to_2d(features)
-                # features_hr = utils.oneD_to_2d(model.upsample(features))
-                # loss = model.loss(Y_fm, Y_hat, A_hat, E_hat, features_hr, features_lr)
                 loss = model.loss(Y_fm, Y_hat, A_hat, E_hat)
 
                 loss.backward()
@@ -84,8 +81,8 @@ def run_one_xp(model, i_dataset, i_xp, n_train, dataset, mse_tensor, sad_tensor,
         model.eval()
         
         with torch.no_grad():
-            _, A_init_fm, features = rsfm.extract_f(fm, Y_init, new_H, wavelengths, A_init)
-            E_hat, A_hat, _, A_hat_lr = model(features)
+            _, A_init_fm, features = rsfm.extract_f(fm, utils.standardise(Y_init), new_H, wavelengths, A_init)
+            E_hat, A_hat, _ = model(features, Y_fm)
             sad, _, mse = plots.compute_metrics_and_plot(E_hat, A_hat, A_init_fm, E_init, normalize_E=True, normalize_A=True, return_results=True, plot_E=False, plot_A=False)
             print(f"Current SAD = {format(sad, '.3f')}, NMSE = {format(mse, '.3f')}")
 
@@ -102,10 +99,6 @@ def run_one_xp(model, i_dataset, i_xp, n_train, dataset, mse_tensor, sad_tensor,
     mse_tensor[i_dataset, i_xp] = mse
     sad_tensor[i_dataset, i_xp] = sad
 
-    torch.cuda.synchronize()
-    torch.cuda.empty_cache()
-    gc.collect()
-
     return mse_tensor, sad_tensor
 
 def main(args, dev):
@@ -117,7 +110,7 @@ def main(args, dev):
 
     print(f"Running {n_train} xp of {n_train} trainings of {model} {version}-{size}")
 
-    datasets = ["jasper", "apex"]
+    datasets = ["urban", "apex"]
 
     # shape (n_datasets, step, n_xp)
     mse_tensor = torch.zeros(len(datasets), n_xp)
@@ -165,7 +158,7 @@ if __name__ == "__main__":
     parser.add_argument("--n_xp", default=10, type=int)
     parser.add_argument("--n_train", default=15, type=int)
     parser.add_argument("--size", default="large", type=str)
-    parser.add_argument("--version", default="v2", type=str)
+    parser.add_argument("--version", default="v1", type=str)
     parser.add_argument("--model", default="DOFA", type=str)
     args = parser.parse_args()
 

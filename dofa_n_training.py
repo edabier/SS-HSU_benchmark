@@ -24,7 +24,6 @@ from src.models import models
 import logging
 
 def instantiate_model(Y, wavelengths, version="v1", size="large"):
-    Y = F.pad(Y, pad=(14,14,14,14), mode="reflect")
     fm, Y_init_fm, new_H = rsfm.create_fm("DOFA", Y, size=size, version=version, path=global_path)
     features_dofa = rsfm.get_dofa_features(fm, Y_init_fm, wavelengths)
     D = int(features_dofa.shape[0])
@@ -40,7 +39,7 @@ def run_one_xp(i_dataset, i_train, n_train, i_xp, dataset, mse_tensor, sad_tenso
     B, c = E_init.shape
 
     fm, Y_init_fm, new_H, D, alpha = instantiate_model(Y_init, wavelengths, H)
-    # sads, mses = [], []
+    sads, mses = [], []
     E_hats, A_hats = torch.zeros(n_train, B, c), torch.zeros(n_train, c, new_H, new_H)
 
     for i in range(n_train): 
@@ -66,16 +65,11 @@ def run_one_xp(i_dataset, i_train, n_train, i_xp, dataset, mse_tensor, sad_tenso
                 optimizer.zero_grad()
 
                 Y = utils.oneD_to_2d(Y).to(dev)  
-                Y = F.pad(Y, pad=(14,14,14,14), mode="reflect")
 
                 Y_fm, features = rsfm.extract_f(fm, Y, new_H, wavelengths)
-                
-                Y_gt = F.interpolate(Y[:, :, alpha:-alpha, alpha:-alpha], size=(224, 224))
-                features = utils.oneD_to_2d(features)[:, 1:-1, 1:-1]
-                features = features.reshape(D, (alpha-2)*(alpha-2))
                 E_hat, A_hat, Y_hat, _ = model(features)
                 
-                loss = model.loss(Y_gt, Y_hat, A_hat, E_hat)
+                loss = model.loss(Y_fm, Y_hat, A_hat, E_hat)
 
                 loss.backward()
                 nn.utils.clip_grad_norm_(model.parameters(), max_norm=10, norm_type=1)
@@ -89,21 +83,10 @@ def run_one_xp(i_dataset, i_train, n_train, i_xp, dataset, mse_tensor, sad_tenso
         
         with torch.no_grad():
             _, A_init_fm, features = rsfm.extract_f(fm, Y_init, new_H, wavelengths, A_init)
-            features = utils.oneD_to_2d(features)[:, 1:-1, 1:-1]
-            features = features.reshape(D, (alpha-2)*(alpha-2))
-
             E_hat1, A_hat1, Y_hat1, _ = model(features)
 
         E_hats[i] = E_hat1
         A_hats[i] = A_hat1.squeeze(0)
-
-        del E_hat1, A_hat1, Y_hat1, E_hat, A_hat, Y_hat, optimizer
-        gc.collect()
-        torch.cuda.empty_cache()
-    
-    # sads_tensor = torch.tensor(sads)
-    # mses_tensor = torch.tensor(mses)
-    # mses_tensor = mses_tensor[~mses_tensor.isnan()]
 
     E_hat_m = torch.mean(E_hats, dim=0)
     A_hat_m = torch.mean(A_hats, dim=0)
@@ -115,10 +98,6 @@ def run_one_xp(i_dataset, i_train, n_train, i_xp, dataset, mse_tensor, sad_tenso
 
     mse_tensor[i_dataset, i_train, i_xp] = mse
     sad_tensor[i_dataset, i_train, i_xp] = sad
-
-    torch.cuda.synchronize()
-    torch.cuda.empty_cache()
-    gc.collect()
 
     return mse_tensor, sad_tensor
 

@@ -205,8 +205,19 @@ def compute_metrics_and_plot(E_hat=None, A_hat=None, A_gt=None, E_gt=None, model
         return total_sad, total_sad_a, total_mse
     
 def plot_pca_features(features, title=None):
+    """
+    Computes PCA on the D channels of the features and display the first 3 components
+    features must be of shape (D, alpha, alpha) or (D, alpha**2)
+    """
+
+    if features.dim() > 3:
+        features = features.squeeze(0)
+    elif features.dim() == 2:
+        features = utils.oneD_to_2d(features)
+    D, alpha, _ = features.shape
+    features = features.flatten(1)
     
-    alpha = int(features.shape[1]**0.5)
+    # alpha = int(features.shape[1]**0.5)
     X = features.T
 
     pca = PCA(n_components=3)

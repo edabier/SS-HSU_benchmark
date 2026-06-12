@@ -18,6 +18,15 @@ from code_christophe.munkres import Munkres
 
 import src.utils.losses as losses
 
+def standardise(Y):
+    """
+    For FMs, the HSI must be standardised before being forwarded
+    """
+    mean = Y.mean()
+    std = Y.std()
+
+    return (Y-mean)/(std + 1e-8)
+
 def order_endmembers(tensor_gt, tensor_hat, tensor2_hat=None):
     """
     Uses scipy linear_sum_assignement algorithm to reorder tensor_hat columns to match tensor_gt
