@@ -7,11 +7,8 @@ from sklearn.feature_extraction.image import extract_patches_2d
 import matplotlib.pyplot as plt
 import math
 
-import src.models.transformer as transformer
-import src.models.srvit as srvit
-import src.utils.extractor as extractor
-import src.utils.utils as utils
-import src.utils.losses as losses
+from src.models import transformer, srvit
+from src.utils import extractor, utils, losses
 
 class HSUModel():
     def __init__(self):

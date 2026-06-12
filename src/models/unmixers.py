@@ -4,8 +4,7 @@ import torch.nn.functional as F
 
 from src.models import upsamplers
 from src.models.foundation_models import Sum_to_one, Decoder
-from src.utils import losses
-from src.utils import utils
+from src.utils import losses, utils
 
 class UnmixingFrom3FMs(nn.Module):
     def __init__(self, D, B, c, alpha_dofa, alpha_specvit, alpha_specaware):

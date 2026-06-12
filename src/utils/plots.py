@@ -4,8 +4,7 @@ import matplotlib.pyplot as plt
 import os
 from sklearn.decomposition import PCA
 
-import src.utils.losses as losses
-import src.utils.utils as utils
+from src.utils import losses, utils
 
 def plot_losses(total_loss, loss_sad, loss_ab, loss_tv, loss_mse):
     fig = plt.figure(figsize=(10, 8))

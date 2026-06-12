@@ -13,35 +13,33 @@ from timm.models.vision_transformer import Block
 
 import matplotlib.pyplot as plt 
 
-from src.utils import plots
-from src.utils import utils
-from src.utils import losses
+from src.utils import plots, utils, losses
 from src.models import upsamplers
 
-global_path = "/home/ids/edabier/HSU"
-# global_path = "/Users/edabier/Documents/Thèse/Thèse_Télécom"
+# global_path = "/home/ids/edabier/HSU"
+global_path = "/Users/edabier/Documents/Thèse/Thèse_Télécom"
 # global_path = "/home/edabier/Documents/Thèse/benchmark"
 sys.path.append(global_path)
 
-sys.path.append(f"{global_path}/SpecAware")
-from SpecAware.example import models_SpecAware_encoder
+# sys.path.append(f"{global_path}/SpecAware")
+# from SpecAware.example import models_SpecAware_encoder
 
-sys.path.append(f"{global_path}/spectral_earth")
-from spectral_earth.src.backbones import spec_vit
-from spectral_earth.src.backbones import spec_resnet
+# sys.path.append(f"{global_path}/spectral_earth")
+# from spectral_earth.src.backbones import spec_vit
+# from spectral_earth.src.backbones import spec_resnet
 
-sys.path.append(f"{global_path}/IEEE_TPAMI_SpectralGPT")
-import models_mae_spectral
+# sys.path.append(f"{global_path}/IEEE_TPAMI_SpectralGPT")
+# import models_mae_spectral
 
-sys.path.append(f"{global_path}/HyperFree")
-import HyperFree.build_HyperFree as hf
-from HyperFree.modeling import image_encoder
+# sys.path.append(f"{global_path}/HyperFree")
+# import HyperFree.build_HyperFree as hf
+# from HyperFree.modeling import image_encoder
 
 sys.path.append(f"{global_path}/DOFA")
 from wave_dynamic_layer import Dynamic_MLP_OFA
 
-sys.path.append(f"{global_path}/HyperSIGMA/HyperspectralUnmixing")
-from models.model import SpatViT, SpecViT
+# sys.path.append(f"{global_path}/HyperSIGMA/HyperspectralUnmixing")
+# from models.model import SpatViT, SpecViT
 
 if torch.cuda.is_available():
     dev = "cuda:0"
