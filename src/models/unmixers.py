@@ -154,7 +154,7 @@ class UnmixingFromFeatures(nn.Module):
         elif upsampler == "Features_fusion_grouped2":
             self.upsample = upsamplers.FeaturesFusionUpsampler2(self.n_features*D, B, alpha, H, group_channels=True)
         else:
-            assert "Unknown upsampler, must be one of [Linear, FiLM, FiLM_grouped, Features_fusion, Features_fusion_grouped]"
+            raise "Unknown upsampler, must be one of [Linear, FiLM, FiLM_grouped, Features_fusion, Features_fusion_grouped]"
 
         # Upsampled features to abundances
         self.abundance_estimator = nn.Sequential(
@@ -303,7 +303,7 @@ class UnmixingFromFeatures2(nn.Module):
         elif upsampler == "Features_fusion_grouped":
             self.upsample = upsamplers.FeaturesFusionUpsampler(c, B, alpha, H, group_channels=True)
         else:
-            assert "Unknown upsampler, must be one of [Linear, FiLM, FiLM_grouped, Features_fusion, Features_fusion_grouped]"
+            raise "Unknown upsampler, must be one of [Linear, FiLM, FiLM_grouped, Features_fusion, Features_fusion_grouped]"
 
         self.abundance_estimator = nn.Sequential(
             nn.Conv2d(D, c, kernel_size=1, bias=False),
