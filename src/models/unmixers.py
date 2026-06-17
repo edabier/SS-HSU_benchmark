@@ -3,7 +3,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from src.models import upsamplers
-from src.models.foundation_models import Sum_to_one, Decoder
 from src.utils import losses, utils
 
 class UnmixingFrom3FMs(nn.Module):
@@ -141,28 +140,13 @@ class UnmixingFromFeatures(nn.Module):
         # Upsampling features
         if upsampler == "Linear":
             self.upsample = nn.Linear(self.alpha**2, self.H**2, bias=False)
-        elif upsampler == "FiLM":
-            self.upsample = upsamplers.FiLMUpsampler(self.n_features*D, self.n_features*D, B, alpha, H, group_channels=False)
-        elif upsampler == "FiLM_grouped":
-            self.upsample = upsamplers.FiLMUpsampler(self.n_features*D, self.n_features*D, B, alpha, H, group_channels=True)
         elif upsampler == "Features_fusion":
-            self.upsample = upsamplers.FeaturesFusionUpsampler(self.n_features*D, B, alpha, H, group_channels=False)
-        elif upsampler == "Features_fusion_grouped":
             self.upsample = upsamplers.FeaturesFusionUpsampler(self.n_features*D, B, alpha, H, group_channels=True)
-        elif upsampler == "Features_fusion2":
-            self.upsample = upsamplers.FeaturesFusionUpsampler2(self.n_features*D, B, alpha, H, group_channels=False)
-        elif upsampler == "Features_fusion_grouped2":
-            self.upsample = upsamplers.FeaturesFusionUpsampler2(self.n_features*D, B, alpha, H, group_channels=True)
         else:
-            raise "Unknown upsampler, must be one of [Linear, FiLM, FiLM_grouped, Features_fusion, Features_fusion_grouped]"
+            raise "Unknown upsampler, must be one of [Linear, Features_fusion]"
 
         # Upsampled features to abundances
-        self.abundance_estimator = nn.Sequential(
-            nn.Conv2d(self.n_features*D, c, kernel_size=1, bias=False),
-            nn.LeakyReLU(0.02),
-            nn.BatchNorm2d(c),
-            nn.Dropout(0.2)
-        )
+        self.abundance_estimator = Abundance_estimator(self.D, self.c, self.n_features)
 
         self.smooth = nn.Sequential(
             nn.Conv2d(c, c, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1)),
@@ -578,3 +562,75 @@ class CNNAEU_with_decoder(nn.Module):
         e_hat = self.decoder.get_endmembers()
         
         return e_hat, a_hat, x_hat
+
+class Weight_constraint(object):
+    def __init__(self):
+        pass
+    def __call__(self, module):
+        if hasattr(module, 'weight'):
+            module.weight.clamp_(min=0)
+
+class Sum_to_one(nn.Module):
+    def __init__(self, scale=1):
+        super(Sum_to_one, self).__init__()
+        self.scale = scale
+    def forward(self, x):
+        # print(x.max())
+        x = F.softmax(self.scale * x, dim=1)
+        return x
+
+class Abundance_estimator(nn.Module):
+    def __init__(self, D, c, n_features, kernel_size=1):
+        super(Abundance_estimator, self).__init__()
+
+        self.abundance_estimator = nn.Sequential(
+            nn.Conv2d(n_features*D, c, kernel_size=kernel_size, bias=False),
+            nn.LeakyReLU(0.02),
+            nn.BatchNorm2d(c),
+            nn.Dropout(0.2)
+        )
+
+        # self.reduce = nn.Sequential(
+        #     nn.Conv2d(n_features*D, (n_features*D)//2, kernel_size=kernel_size, bias=False),
+        #     nn.LeakyReLU(0.02),
+        #     nn.BatchNorm2d((n_features*D)//2),
+        #     nn.Dropout(0.2)
+        # )
+
+        # self.spectral_regul = nn.Linear((n_features*D)//2, (n_features*D)//2)
+
+        # self.abundance_estimator = nn.Sequential(
+        #     nn.Conv2d((n_features*D)//2, c, kernel_size=kernel_size, bias=False),
+        #     nn.LeakyReLU(0.02),
+        #     nn.BatchNorm2d(c),
+        #     nn.Dropout(0.2)
+        # )
+    
+    def forward(self, up_feat):
+
+        # up_feat = self.reduce(up_feat)
+        # up_feat = self.spectral_regul(up_feat)
+        A_hat = self.abundance_estimator(up_feat)
+
+        return A_hat
+
+class Decoder(nn.Module):
+    def __init__(self, c, B, kernel_size=1):
+        super(Decoder, self).__init__()
+        self.B = B
+        self.c = c
+
+        padding = kernel_size //2
+        self.decoder = nn.Conv2d(in_channels=c, out_channels=B,
+                                kernel_size=kernel_size,stride=1,
+                                padding=padding, bias=False)
+
+    def forward(self, code):
+
+        code = self.decoder(code)
+        
+        return code
+
+    def get_endmembers(self):
+
+        return self.decoder.weight.data.squeeze([2, 3])
