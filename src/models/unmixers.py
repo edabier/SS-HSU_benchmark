@@ -115,7 +115,7 @@ class UnmixingFrom3FMs(nn.Module):
         return E_hat, A_hat, Y_hat
  
 class UnmixingFromFeatures(nn.Module):
-    def __init__(self, D, B, c, H=224, alpha=None, n_features=1, upsampler="Linear", channel_selector=False):
+    def __init__(self, D, B, c, H=224, alpha=None, n_features=1, upsampler="Linear", channel_selector=False, kernel_size=1):
         """
         Upsamples low res features then estimates A_hat
         
@@ -144,14 +144,16 @@ class UnmixingFromFeatures(nn.Module):
             self.upsample = upsamplers.FeaturesFusionUpsampler(self.n_features*D, B, alpha, H, group_channels=True)
         else:
             raise "Unknown upsampler, must be one of [Linear, Features_fusion]"
+        
+        # self.spectral_regul = nn.Linear(self.n_features*D, self.n_features*D)
 
         # Upsampled features to abundances
-        self.abundance_estimator = Abundance_estimator(self.D, self.c, self.n_features)
+        self.abundance_estimator = Abundance_estimator(self.D, self.c, self.n_features, kernel_size=kernel_size)
 
-        self.smooth = nn.Sequential(
-            nn.Conv2d(c, c, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1)),
-            nn.Softmax(dim=1),
-        )
+        # self.smooth = nn.Sequential(
+        #     nn.Conv2d(c, c, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1)),
+        #     nn.Softmax(dim=1),
+        # )
 
         if channel_selector:
         # self.channel_selector = nn.Parameter(torch.ones(self.D))
@@ -235,9 +237,11 @@ class UnmixingFromFeatures(nn.Module):
         features_up = features_up.view(
             1, self.n_features*self.D, self.H, self.H
         )
+        # features_up = utils.oneD_to_2d(self.spectral_regul(features_up.flatten(2).permute(0, 2, 1)).permute(0, 2, 1))
+        # features_up = utils.oneD_to_2d(self.spectral_regul(features_up.unsqueeze(0).permute(0, 2, 1)).permute(0, 2, 1))
+
         features_up = (features_up - features_up.mean())/ (1e-8 + features_up.std())
         A_hat = self.abundance_estimator(features_up)
-        # A_hat = self.smooth(A_hat)
         A_hat = self.sum_to_one(A_hat)
 
         return A_hat
@@ -583,33 +587,33 @@ class Abundance_estimator(nn.Module):
     def __init__(self, D, c, n_features, kernel_size=1):
         super(Abundance_estimator, self).__init__()
 
-        self.abundance_estimator = nn.Sequential(
-            nn.Conv2d(n_features*D, c, kernel_size=kernel_size, bias=False),
-            nn.LeakyReLU(0.02),
-            nn.BatchNorm2d(c),
-            nn.Dropout(0.2)
-        )
-
-        # self.reduce = nn.Sequential(
-        #     nn.Conv2d(n_features*D, (n_features*D)//2, kernel_size=kernel_size, bias=False),
-        #     nn.LeakyReLU(0.02),
-        #     nn.BatchNorm2d((n_features*D)//2),
-        #     nn.Dropout(0.2)
-        # )
-
-        # self.spectral_regul = nn.Linear((n_features*D)//2, (n_features*D)//2)
-
         # self.abundance_estimator = nn.Sequential(
-        #     nn.Conv2d((n_features*D)//2, c, kernel_size=kernel_size, bias=False),
+        #     nn.Conv2d(n_features*D, c, kernel_size=kernel_size, bias=False, padding="same"),
         #     nn.LeakyReLU(0.02),
         #     nn.BatchNorm2d(c),
         #     nn.Dropout(0.2)
         # )
+
+        self.reduce = nn.Sequential(
+            nn.Conv2d(n_features*D, (n_features*D)//2, kernel_size=kernel_size, bias=False),
+            nn.LeakyReLU(0.02),
+            nn.BatchNorm2d((n_features*D)//2),
+            nn.Dropout(0.2)
+        )
+
+        self.spectral_regul = nn.Linear((n_features*D)//2, (n_features*D)//2)
+
+        self.abundance_estimator = nn.Sequential(
+            nn.Conv2d((n_features*D)//2, c, kernel_size=kernel_size, bias=False),
+            nn.LeakyReLU(0.02),
+            nn.BatchNorm2d(c),
+            nn.Dropout(0.2)
+        )
     
     def forward(self, up_feat):
 
-        # up_feat = self.reduce(up_feat)
-        # up_feat = self.spectral_regul(up_feat)
+        up_feat = self.reduce(up_feat)
+        up_feat = utils.oneD_to_2d(self.spectral_regul(up_feat.flatten(2).permute(0,2,1)).permute(0,2,1))
         A_hat = self.abundance_estimator(up_feat)
 
         return A_hat

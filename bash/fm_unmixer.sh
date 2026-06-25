@@ -22,15 +22,16 @@ N_TRAIN=15
 VERSION="v1"
 SIZE="large"
 MODEL="DOFA"
-UPSAMPLER="Linear"
+UPSAMPLER="Features_fusion"
 
 # Execute the Python script with specific arguments
 # srun python /home/ids/edabier/HSU/SS-HSU_benchmark/fm_unmixing.py --n_xp $N_XP
 # srun python /home/ids/edabier/HSU/SS-HSU_benchmark/dofa_n_training.py
 # srun python /home/ids/edabier/HSU/SS-HSU_benchmark/padding_training_2.py
-srun python /home/ids/edabier/HSU/SS-HSU_benchmark/dofa_15_training.py --version $VERSION --size $SIZE --model $MODEL
+# srun python /home/ids/edabier/HSU/SS-HSU_benchmark/dofa_15_training.py --version $VERSION --size $SIZE --model $MODEL
 # srun python /home/ids/edabier/HSU/SS-HSU_benchmark/dofa_shift_15_training.py --n_xp $N_XP --n_train $N_TRAIN --version $VERSION --size $SIZE
-# srun python /home/ids/edabier/HSU/SS-HSU_benchmark/train_upsamplers.py --upsampler $UPSAMPLER
+# srun python /home/ids/edabier/HSU/SS-HSU_benchmark/train_upsamplers.py --upsampler $UPSAMPLER --model $MODEL
+srun python /home/ids/edabier/HSU/SS-HSU_benchmark/train_upsamplers_ablation.py --model $MODEL --upsampler $UPSAMPLER
 
 # Print job completion time
 echo "Job finished at: $(date)"

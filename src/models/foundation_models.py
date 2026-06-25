@@ -5,48 +5,47 @@ import torch
 from torchvision.transforms import Pad
 from functools import partial
 import numpy as np
-from sklearn.metrics.pairwise import cosine_similarity
 import sys
-import argparse
 import os
 from timm.models.vision_transformer import Block
+from safetensors.torch import load_file
 
 import matplotlib.pyplot as plt 
 
-from src.utils import plots, utils, losses
-from src.models import upsamplers
+from src.utils import utils, losses
 
 global_path = "/home/ids/edabier/HSU"
 # global_path = "/Users/edabier/Documents/Thèse/Thèse_Télécom"
 # global_path = "/home/edabier/Documents/Thèse/benchmark"
 sys.path.append(global_path)
 
-sys.path.append(f"{global_path}/SpecAware")
+# sys.path.append(f"{global_path}/SpecAware")
 from SpecAware.example import models_SpecAware_encoder
 
-sys.path.append(f"{global_path}/spectral_earth")
+# sys.path.append(f"{global_path}/spectral_earth")
 from spectral_earth.src.backbones import spec_vit
 from spectral_earth.src.backbones import spec_resnet
+from spectral_earth.src.backbones import spectral_adapter
 
-sys.path.append(f"{global_path}/IEEE_TPAMI_SpectralGPT")
-import models_mae_spectral
+# sys.path.append(f"{global_path}/NAF")
+from NAF.src.model import naf
 
-sys.path.append(f"{global_path}/HyperFree")
-import HyperFree.build_HyperFree as hf
-from HyperFree.modeling import image_encoder
+# sys.path.append(f"{global_path}/IEEE_TPAMI_SpectralGPT")
+import IEEE_TPAMI_SpectralGPT.models_mae_spectral
 
-sys.path.append(f"{global_path}/DOFA")
-from wave_dynamic_layer import Dynamic_MLP_OFA
+from panopticon.dinov2.models import vision_transformer as panopticon_vits
+
+import UniverSat.hubconf as buildUniverSat
+
+# sys.path.append(f"{global_path}/HyperFree")
+import HyperFree.HyperFree.build_HyperFree as hf
+from HyperFree.HyperFree.modeling import image_encoder
+
+# sys.path.append(f"{global_path}/DOFA")
+from DOFA.wave_dynamic_layer import Dynamic_MLP_OFA
 
 sys.path.append(f"{global_path}/HyperSIGMA/HyperspectralUnmixing")
-from models.model import SpatViT, SpecViT
-
-if torch.cuda.is_available():
-    dev = "cuda:0"
-    torch.set_default_device(dev)
-else:
-    print(f"{torch.cuda.is_available()}")
-    dev = "cpu"
+from HyperSIGMA.HyperspectralUnmixing.models.model import SpatViT, SpecViT
 
 class HyperSIGMA_Unmix(torch.nn.Module):
     def __init__(self, patch_size, channels, seg_patches, NUM_TOKENS, embed_dim, num_em, scale):
@@ -495,36 +494,108 @@ def create_fm(fm_name, Y, c=None, n_features=1, size="base", version="v2", use_c
 
         if size == "small":
             fm = spec_vit.SpecViTSmall()
-            checkpoint = torch.load(f"{path}/pretrained_models/SpectralEarth/spec_ViTs_mae.pth", map_location=dev)
+            checkpoint = torch.load(f"{path}/pretrained_models/SpectralEarth/spec_ViTs_mae.pth", map_location=device)
 
         elif size == "base":
             fm = spec_vit.SpecViTBase()
-            checkpoint = torch.load(f"{path}/pretrained_models/SpectralEarth/spec_ViTb_mae.pth", map_location=dev)
+            checkpoint = torch.load(f"{path}/pretrained_models/SpectralEarth/spec_ViTb_mae.pth", map_location=device)
 
         elif size == "large":
             fm = spec_vit.SpecViTLarge()
-            checkpoint = torch.load(f"{path}/pretrained_models/SpectralEarth/spec_ViTl_mae.pth", map_location=dev)
+            checkpoint = torch.load(f"{path}/pretrained_models/SpectralEarth/spec_ViTl_mae.pth", map_location=device)
 
         elif size == "huge":
             fm = spec_vit.SpecViTHuge()
-            checkpoint = torch.load(f"{path}/pretrained_models/SpectralEarth/spec_ViTh_mae.pth", map_location=dev)
+            checkpoint = torch.load(f"{path}/pretrained_models/SpectralEarth/spec_ViTh_mae.pth", map_location=device)
 
         fm.load_state_dict(checkpoint, strict=False)
 
     elif fm_name == "SpecRnDino":
         fm = spec_resnet.SpecResNet50(num_classes=0)
-        checkpoint = torch.load(f"{path}/pretrained_models/SpectralEarth/spec_rn50_dino.pth", map_location=dev)
+        checkpoint = torch.load(f"{path}/pretrained_models/SpectralEarth/spec_rn50_dino.pth", map_location=device)
         fm.load_state_dict(checkpoint, strict=False)
 
     elif fm_name == "SpecRnMoco":
         fm = spec_resnet.SpecResNet50(num_classes=0)
-        checkpoint = torch.load(f"{path}/pretrained_models/SpectralEarth/spec_rn50_moco.pth", map_location=dev)
+        checkpoint = torch.load(f"{path}/pretrained_models/SpectralEarth/spec_rn50_moco.pth", map_location=device)
         fm.load_state_dict(checkpoint, strict=False)
     
+    elif fm_name == "Panopticon":
+        if H < 224:
+            Y = F.interpolate(Y, size=(224,224))
+            new_H = 224
+        else:
+            new_H = 224
+        Y = Y[:,:,:new_H, :new_H]
+
+        if version == "student":
+            checkpoint = torch.load(f"{path}/pretrained_models/Panopticon/panopticon_vitb14.pth", map_location=device)["model"]
+            checkpoint = {
+                key.replace("student.backbone.", ""): value
+                for key, value in checkpoint.items()
+                if key.startswith("student.backbone.")
+            }
+        else:
+            checkpoint = torch.load(f"{path}/pretrained_models/Panopticon/panopticon_vitb14.pth", map_location=device)["model"]
+            checkpoint = {
+                key.replace("teacher.backbone.", ""): value
+                for key, value in checkpoint.items()
+                if key.startswith("teacher.backbone.")
+            }
+
+        vit_kwargs = dict(
+            img_size = 518, # was trained on 224 but 568 is legacy from last large image size epoch in dinov2 training
+            patch_size = 14, init_values = 1.0e-05, ffn_layer = 'mlp', block_chunks = 0, qkv_bias = True, proj_bias = True, 
+            ffn_bias = True, num_register_tokens = 0, embed_layer = 'PanopticonPE', 
+            pe_args = dict(attn_dim = 2304, chnfus_cfg = dict(layer_norm = False, attn_cfg = dict(num_heads = 16))),
+        )
+        fm = panopticon_vits.__dict__["vit_base"](**vit_kwargs)
+        fm.load_state_dict(checkpoint, strict=True)
+
+    elif fm_name == "UniverSat":
+        if H < 224:
+            Y = F.interpolate(Y, size=(224,224))
+            new_H = 224
+        else:
+            new_H = 224
+        Y = Y[:,:,:new_H, :new_H]
+
+        modalities_dict = {
+            "hyperglobal": ["EO1"],
+            "spectralearth": ["enmap"],
+        }
+
+        checkpoint = load_file(f"{path}/pretrained_models/UniverSat/model.safetensors")
+        checkpoint = {
+                key.replace("model.", ""): value
+                for key, value in checkpoint.items()
+                if key.startswith("model.")
+            }
+
+        fm = buildUniverSat._build_model(size="base", modalities_dict=modalities_dict)
+        fm.load_state_dict(checkpoint, strict=False)
+
     else:
         raise(f"Fm name {fm_name} is not known, use DOFA, HyperFree, HyperSIGMA, SpecViT, SpecRnDino or SpecRnMoco")
     
     return fm, Y, new_H
+
+def create_naf(model_name="DOFA", dev="cpu", path="/home/ids/edabier/HSU"):
+
+    checkpoint = torch.load(f"{path}/pretrained_models/SpectralEarth/spec_ViTb_mae.pth", map_location=dev)
+    spectral_adapter_state_dict = {
+        key.replace("spectral_adapter.", ""): value
+        for key, value in checkpoint.items()
+        if key.startswith("spectral_adapter.")
+    }
+    adapter = spectral_adapter.SpectralAdapter()
+    adapter.load_state_dict(spectral_adapter_state_dict, strict=False)
+    naf_upsampler = naf.NAF(in_channels=128, kernel_size=7)
+
+    state_dict = torch.load(f"{path}/pretrained_models/NAF/trained_naf_{model_name}.pt")
+    naf_upsampler.load_state_dict(state_dict, strict=False)
+
+    return adapter, naf_upsampler
 
 def reshape_Y(fm_name, Y, new_H=None, A=None):
 
@@ -573,12 +644,24 @@ def reshape_Y(fm_name, Y, new_H=None, A=None):
                 A = F.interpolate(A, size=(new_H,new_H))
             A = A[:,:,:new_H, :new_H]
     
+    elif fm_name == "Panopticon" or fm_name == "DinoVisionTransformer":
+        new_H = 224
+
+        if Y.shape[-1] < new_H:
+            Y = F.interpolate(Y, size=(new_H,new_H))
+        Y = Y[:,:,:new_H, :new_H]
+        
+        if A != None:
+            if A.shape[-1] < new_H:
+                A = F.interpolate(A, size=(new_H,new_H))
+            A = A[:,:,:new_H, :new_H]
+    
     else:
         if A != None:
             return Y, A
         else:
             return Y
-
+        
     if A != None:
         return Y, A
     else:
@@ -593,27 +676,36 @@ def extract_f(fm, Y, new_H, wavelengths, A=None, use_cls=False):
         Y = reshape_Y(fm_name, Y, new_H)
 
     if fm_name == "OFAViT": # DOFA
-        features = get_dofa_features(fm, Y, wavelengths)
+        features = get_dofa_features(fm, utils.standardise(Y), wavelengths)
         noise = torch.rand_like(features)
 
     elif fm_name == "ImageEncoderViT": # HyperFree
-        features = get_hyperfree_features(fm, Y, wavelengths)
+        features = get_hyperfree_features(fm, utils.standardise(Y), wavelengths)
         noise = torch.rand_like(features)
 
     elif fm_name == "SpecViTBase" or fm_name == "SpecViT" or fm_name == "SpecViTSmall" or fm_name == "SpecViTLarge" or fm_name == "SpecViTHuge":
 
-        features = get_specvit_features(fm, Y, use_cls)
+        features = get_specvit_features(fm, utils.standardise(Y), use_cls)
         noise = torch.rand_like(features)
 
     elif fm_name == "MaskedHSIAutoencoderViT":# SpecAware
-        features, _ = fm.forward(Y, wavelength=torch.tensor(wavelengths), fwhm=torch.tensor([1]))
+        features, _ = fm.forward(utils.standardise(Y), wavelength=torch.tensor(wavelengths), fwhm=torch.tensor([1]))
     
     elif fm_name == "HyperSIGMA_Unmix":
-        features = fm.forward_features(Y)
+        features = fm.forward_features(utils.standardise(Y))
+
+    elif fm_name == "DinoVisionTransformer":
+        x_dict = dict(
+            imgs = utils.standardise(Y),
+            chn_ids = torch.tensor(wavelengths).repeat(1,1)
+        )
+        features = fm.get_intermediate_layers(x_dict, n=[11], return_class_token=False)[0][0].T
+    
+    elif fm_name == "UniverSat":
+        features = fm(x={"hsi":Y}, wavelengths={"hsi":wavelengths}, input_res={"hsi":30}, scale=100, latent_grid=16, output_grid=new_H**2, subpatches={"hsi":1})[0][0].T
 
     else:
-        raise("Fm is not known, use DOFA, HyperFree, HyperSIGMA, SpecViT, SpecRnDino or SpecRnMoco")
-        return
+        raise("Fm is not known, use DOFA, HyperFree, HyperSIGMA, SpecViT, SpecRnDino, SpecRnMoco, Panopticon or UniverSat")
     
     if A != None:
         return Y, A, features
@@ -640,14 +732,14 @@ def upsample_features(fm, Y, wavelengths, new_H, D, alpha):
     grid = grid / torch.tensor([(new_H - 1) / 2, (new_H - 1) / 2]) - 1
 
     Y_padded = F.pad(Y, pad=(padding, padding, padding, padding), mode="reflect")
-    feature_map = torch.zeros(1, D, new_H, new_H, device=dev)
+    feature_map = torch.zeros(1, D, new_H, new_H, device=Y.device)
 
     with torch.no_grad():
         for i in range(0, 2*padding):
             for j in range(0, 2*padding):
                 
                 Y_crop = Y_padded[:, :, i:i+new_H, j:j+new_H]
-                Y_crop = Y_crop.to(dev)
+                Y_crop = Y_crop.to(Y.device)
                 _, features = extract_f(fm, Y_crop, new_H, wavelengths)
 
                 features = utils.oneD_to_2d(features)

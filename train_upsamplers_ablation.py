@@ -15,16 +15,131 @@ global_path = "/home/ids/edabier/HSU"
 sys.path.append(f"{global_path}/HyperSIGMA/HyperspectralUnmixing")
 from mmcv__custom import layer_decay_optimizer_constructor_vit
 
-from src.utils import utils
-from src.utils import plots
-from src.models import foundation_models as rsfm
-from src.models import models
-from src.models import unmixers as unmx
+from src.utils import utils, plots, losses
+from src.models import foundation_models as rsfm, models, unmixers as unmx
 
-import logging
+class FeaturesFusionUpsampler_ablation(nn.Module):
+    def __init__(self, C, B, H):
+        super().__init__()
+        self.C = C
+        self.B = B
+        self.H = H
 
-def instantiate_model(model, Y, wavelengths, version="v1", size="large"):
-    fm, Y_init_fm, new_H = rsfm.create_fm(model, Y, size=size, version=version, path=global_path)
+        # Step 1 : Extract features from high-res tensor (B channels)
+        self.extract_hr = nn.Conv2d(B, C, kernel_size=1)  # Project B to C channels
+
+        # Step 2 : Fuse upsampled low-res and high-res features
+        self.fuse = nn.Sequential(
+            nn.Conv2d(C, C, kernel_size=3, padding=1, groups=C),  # Concatenate and fuse
+            nn.BatchNorm2d(C),
+            nn.LeakyReLU(0.01),
+        )
+
+    def forward(self, x_hr):
+        
+        # Extract features from high-res tensor
+        x_hr_feat = self.extract_hr(x_hr)  # (batch, C, H, H)
+
+        # Fuse by concatenation
+        x_fused = self.fuse(x_hr_feat)  # (batch, C, H, H)
+
+        return x_fused
+    
+class UnmixingFromFeatures(nn.Module):
+    def __init__(self, D, B, c, H=224, upsampler="Linear"):
+        """
+        Upsamples low res features then estimates A_hat
+        
+        Args:
+            D (int): The embed_dim
+            B (int): The number of spectral bands in the hsi
+            c (int): The number of endmembers to extract
+            H (int): The size of the input hsi
+            alpha (int): The size of the features
+            n_features (int): The size of the list of features in the case of several extracted features
+
+        """
+        super(UnmixingFromFeatures, self).__init__()
+        self.D = D
+        self.B = B
+        self.c = c
+        self.H = H
+        self.upsampler = upsampler
+
+        # Upsampling features
+        if upsampler == "Linear":
+            self.upsample = nn.Linear(self.alpha**2, self.H**2, bias=False)
+        elif upsampler == "Features_fusion":
+            self.upsample = FeaturesFusionUpsampler_ablation(D, B, H)
+        else:
+            raise "Unknown upsampler, must be one of [Linear, Features_fusion]"
+        self.spectral_regul = nn.Linear(D, D)
+
+        # Upsampled features to abundances
+        self.abundance_estimator = unmx.Abundance_estimator(self.D, self.c, 1)
+
+        self.sum_to_one = unmx.Sum_to_one()
+        self.decoder = unmx.Decoder(B=B, c=c)
+
+    @staticmethod
+    def weights_init(m):
+        if type(m) == nn.Conv2d:
+            nn.init.kaiming_normal_(m.weight.data)
+
+    @staticmethod
+    def loss(Y_gt, Y_hat, A_hat, E_hat, W_sad=1, W_ab=0.6, W_tv_e=3e-5, W_mse=0.09, hypersigma=False, return_losses=False):
+        sad = losses.SADLoss()
+        tv = losses.TVLoss(reduction="mean")
+        mse = nn.MSELoss(reduction='sum')
+        
+        loss_sad = W_sad * sad(Y_gt, Y_hat)
+        loss_ab = W_ab * torch.sqrt(A_hat).mean()
+
+        if hypersigma:
+            loss_mse = W_mse * losses.hypersigma_mse(Y_gt, Y_hat)
+        else:
+            loss_mse = W_mse * mse(Y_gt, Y_hat)/(torch.norm(Y_gt)**2)
+
+        """Abundances and endmembers regularisation"""
+
+        # TV on endmembers (sum of difference between consecutive endmembers)
+        loss_tv_e = W_tv_e * (torch.abs(E_hat[:, 1:] - E_hat[:, :-1]).sum())
+
+        """Feature regularisation"""
+
+        loss = loss_sad + loss_ab + loss_tv_e + loss_mse
+
+        if return_losses:
+            return loss, loss_sad, loss_ab, loss_tv_e, loss_mse
+        else:
+            return loss
+
+    def get_abundances(self, Y):
+
+        features_up = self.upsample(Y)
+        features_up = features_up.view(
+            1, self.D, self.H, self.H
+        )
+        features_up = utils.oneD_to_2d(self.spectral_regul(features_up.flatten(2).permute(0, 2, 1)).permute(0, 2, 1))
+
+        features_up = (features_up - features_up.mean())/ (1e-8 + features_up.std())
+        A_hat = self.abundance_estimator(features_up)
+        A_hat = self.sum_to_one(A_hat)
+
+        return A_hat
+    
+    def get_endmembers(self):
+        return self.decoder.get_endmembers()
+    
+    def forward(self, Y):
+        A_hat = self.get_abundances(Y)
+        Y_hat = self.decoder(A_hat)
+        E_hat = self.decoder.get_endmembers()
+
+        return E_hat, A_hat, Y_hat
+
+def instantiate_model(Y, wavelengths, model, version="v1", size="large"):
+    fm, Y_init_fm, new_H = rsfm.create_fm(model, Y, version=version, size=size, path=global_path)
     _, features = rsfm.extract_f(fm, Y_init_fm, new_H, wavelengths)
     D = int(features.shape[0])
     alpha = int(features.shape[1]**0.5)
@@ -38,7 +153,7 @@ def run_one_xp(i_dataset, upsampler, model, i_xp, dataset, mse_tensor, sad_tenso
     E_init = E_init.to(dev)
     B, c = E_init.shape
 
-    fm, Y_init_fm, new_H, D, alpha = instantiate_model(model, Y_init, wavelengths)
+    fm, Y_init_fm, new_H, D, alpha = instantiate_model(Y_init, wavelengths, model)
     n_train = 15
     E_hats, A_hats = torch.zeros(n_train, B, c), torch.zeros(n_train, c, new_H, new_H)
 
@@ -46,7 +161,7 @@ def run_one_xp(i_dataset, upsampler, model, i_xp, dataset, mse_tensor, sad_tenso
         
         print(f"Training {i+1}/{n_train}")
 
-        model = unmx.UnmixingFromFeatures(D=D, alpha=alpha, B=B, c=c, H=new_H, upsampler=upsampler)
+        model = UnmixingFromFeatures(D=D, B=B, c=c, H=new_H, upsampler=upsampler)
 
         model.apply(model.weights_init)
         model = models.init_decoder_weights(model, Y_init_fm/Y_init_fm.max(), c, is_unmixer=True)
@@ -68,9 +183,9 @@ def run_one_xp(i_dataset, upsampler, model, i_xp, dataset, mse_tensor, sad_tenso
 
                 Y = utils.oneD_to_2d(Y).to(dev)
 
-                Y_fm, features = rsfm.extract_f(fm, Y, new_H, wavelengths)
+                Y_fm = rsfm.reshape_Y("DOFA", Y)
 
-                E_hat, A_hat, Y_hat = model(features, Y_fm)
+                E_hat, A_hat, Y_hat = model(Y_fm)
 
                 loss = model.loss(Y_fm, Y_hat, A_hat, E_hat)
 
@@ -85,8 +200,9 @@ def run_one_xp(i_dataset, upsampler, model, i_xp, dataset, mse_tensor, sad_tenso
         model.eval()
         
         with torch.no_grad():
-            _, A_init_fm, features = rsfm.extract_f(fm, Y, new_H, wavelengths, A_init)
-            E_hat, A_hat, _ = model(features, Y_fm)
+        
+            Y_fm, A_init_fm = rsfm.reshape_Y("DOFA", Y, new_H, A_init)
+            E_hat, A_hat, _ = model(Y_fm)
 
             if not E_hat.isnan().any().item() and not A_hat.isnan().any().item():
                 sad, _, mse = plots.compute_metrics_and_plot(E_hat, A_hat, A_init_fm, E_init, normalize_E=True, normalize_A=True, return_results=True, plot_E=False, plot_A=False)
@@ -167,8 +283,6 @@ def main(args, dev):
         wandb.log({f"{dataset}_{upsampler}_SAD_std": torch.std(sad)})
 
 if __name__ == "__main__":
-
-    logging.getLogger().setLevel(logging.WARNING) 
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--upsampler", default="Features_fusion", type=str)
