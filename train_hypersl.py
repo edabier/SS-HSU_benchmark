@@ -2,11 +2,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import scipy.io as io
-import argparse
-import matplotlib.pyplot as plt
 import os
 import sys
-import gc
 import wandb
 
 from mmengine.optim import build_optim_wrapper
@@ -23,22 +20,20 @@ from src.models import unmixers as unmx
 
 import logging
 
-def instantiate_model(model, Y, wavelengths, version="v1", size="large"):
-    fm, Y_init_fm, new_H = rsfm.create_fm(model, Y, size=size, version=version, path=global_path)
-    _, features = rsfm.extract_f(fm, Y_init_fm, new_H, wavelengths)
-    D = int(features.shape[0])
-    adapter, naf_upsampler = rsfm.create_naf(model, Y.device)
+def instantiate_model(Y):
+    fm, Y_fm, new_H = rsfm.create_fm("HyperSL", Y, path=global_path)
+    D = fm.embedding_dim
 
-    return fm, Y_init_fm, new_H, D, adapter, naf_upsampler
+    return fm, D, Y_fm, new_H
 
-def run_one_xp(i_dataset, model, size, i_xp, dataset, mse_tensor, sad_tensor, Y_init, A_init, E_init, wavelengths, H, dev):
+def run_one_xp(i_dataset, i_xp, dataset, mse_tensor, sad_tensor, Y_init, A_init, E_init, wavelengths, H, dev):
 
     Y_init = Y_init.to(dev)
     A_init = A_init.to(dev)
     E_init = E_init.to(dev)
     B, c = E_init.shape
 
-    fm, Y_init_fm, new_H, D, adapter, naf_upsampler = instantiate_model(model, Y_init, wavelengths, size=size)
+    fm, D, Y_init_fm, new_H = instantiate_model(Y_init)
     n_train = 15
     E_hats, A_hats = torch.zeros(n_train, B, c), torch.zeros(n_train, c, new_H, new_H)
 
@@ -68,12 +63,9 @@ def run_one_xp(i_dataset, model, size, i_xp, dataset, mse_tensor, sad_tensor, Y_
 
                 Y = utils.oneD_to_2d(Y).to(dev)
 
-                with torch.no_grad():
-                    Y_fm, features = rsfm.extract_f(fm, Y, new_H, wavelengths)
-                    Y_adapted = adapter(Y_fm)
-                    feat_up = naf_upsampler(Y_adapted, utils.oneD_to_2d(features).unsqueeze(0), Y_adapted.shape[-2:])
-            
-                E_hat, A_hat, Y_hat = model(feat_up)
+                Y_fm, features = rsfm.extract_f(fm, Y, new_H, wavelengths)#, patch_size=56)
+
+                E_hat, A_hat, Y_hat = model(features.unsqueeze(0))
 
                 loss = model.loss(Y_fm, Y_hat, A_hat, E_hat)
 
@@ -88,11 +80,9 @@ def run_one_xp(i_dataset, model, size, i_xp, dataset, mse_tensor, sad_tensor, Y_
         model.eval()
         
         with torch.no_grad():
-
-            Y_fm, A_init_fm, features = rsfm.extract_f(fm, Y, new_H, wavelengths, A_init)
-            Y_adapted = adapter(Y_fm)
-            feat_up = naf_upsampler(Y_adapted, utils.oneD_to_2d(features).unsqueeze(0), Y_adapted.shape[-2:])
-            E_hat, A_hat, Y_hat = model(feat_up)
+            _, features = rsfm.extract_f(fm, Y, new_H, wavelengths)#, patch_size=56)
+            E_hat, A_hat, _ = model(features.unsqueeze(0))
+            _, A_init_fm = rsfm.reshape_Y("HyperSL", Y, new_H, A_init)
 
             if not E_hat.isnan().any().item() and not A_hat.isnan().any().item():
                 sad, _, mse = plots.compute_metrics_and_plot(E_hat, A_hat, A_init_fm, E_init, normalise_E=True, normalise_A=True, return_results=True, plot_E=False, plot_A=False)
@@ -127,12 +117,9 @@ def run_one_xp(i_dataset, model, size, i_xp, dataset, mse_tensor, sad_tensor, Y_
 
     return mse_tensor, sad_tensor
 
-def main(args, dev):
+def main(dev):
     n_xp = 10
-    model = args.model
-    size = args.size
 
-    # datasets = ["samson", "apex"]
     datasets = ["urban"]
     # datasets = ["samson", "jasper", "apex", "urban"]
 
@@ -157,29 +144,24 @@ def main(args, dev):
             lines = file.readlines()
             wavelengths = [float(line.strip()) for line in lines if line.strip()]
 
-        print(f"Training DOFA 15 times")
+        print(f"Training UniverSat 15 times")
 
         for i_xp in range(n_xp):
 
             print(f"------ Running {i_xp+1}th experiment ------")
-            mse_tensor, sad_tensor = run_one_xp(i_dataset, model, size, i_xp, dataset, mse_tensor, sad_tensor, Y_init, A_init, E_init, wavelengths, H, dev)
+            mse_tensor, sad_tensor = run_one_xp(i_dataset, i_xp, dataset, mse_tensor, sad_tensor, Y_init, A_init, E_init, wavelengths, H, dev)
             
         mse = mse_tensor[i_dataset]
         sad = sad_tensor[i_dataset]
         
-        wandb.log({f"{dataset}__MSE_mean": torch.mean(mse)})
-        wandb.log({f"{dataset}__MSE_std": torch.std(mse)})
-        wandb.log({f"{dataset}__SAD_mean": torch.mean(sad)})
-        wandb.log({f"{dataset}__SAD_std": torch.std(sad)})
+        wandb.log({f"{dataset}_MSE_mean": torch.mean(mse)})
+        wandb.log({f"{dataset}_MSE_std": torch.std(mse)})
+        wandb.log({f"{dataset}_SAD_mean": torch.mean(sad)})
+        wandb.log({f"{dataset}_SAD_std": torch.std(sad)})
 
 if __name__ == "__main__":
 
     logging.getLogger().setLevel(logging.WARNING) 
-
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--model", default="DOFA", type=str)
-    parser.add_argument("--size", default="large", type=str)
-    args = parser.parse_args()
 
     if not torch.cuda.is_available():
         print("CUDA_VISIBLE_DEVICES =", os.environ.get("CUDA_VISIBLE_DEVICES"))
@@ -189,8 +171,8 @@ if __name__ == "__main__":
         dev = "cuda:0"
         torch.set_default_device(dev)
         
-    run = wandb.init(project=f"{args.model}_NAF")
+    run = wandb.init(project="HyperSL")
     
     print(f"Starting project on dev: {dev}")
     
-    main(args, dev)
+    main(dev)

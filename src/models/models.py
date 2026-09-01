@@ -36,7 +36,7 @@ class weightConstraint(object):
         if hasattr(module, 'weight'):
             module.weight.clamp_(min=0)
 
-def init_decoder_weights(model, Y, c, E_hat=None, kernel=None, is_unmixer=False, use_sivm=True, model_name=None, normalize=False, return_E=False):
+def init_decoder_weights(model, Y, c, E_hat=None, kernel=None, is_unmixer=False, use_sivm=True, model_name=None, normalise=False, return_E=False, seed=None):
     """
     Initializes the model's decoder weights with VCA extracted endmembers
     input Y must be of shape (B, N) or (B, H, W) -> no batch
@@ -46,12 +46,12 @@ def init_decoder_weights(model, Y, c, E_hat=None, kernel=None, is_unmixer=False,
         init_em = E_hat
     else:
         if use_sivm:
-            init_em = extractor.SiVM(Y, c)
+            init_em = extractor.SiVM(Y, c, seed=seed)
         else:
             init_em = extractor.VCA(Y, c)
 
-    if normalize:
-        init_em = utils.normalize(init_em, is_endmember=True)
+    if normalise:
+        init_em = utils.normalise(init_em, is_endmember=True)
 
     model_dict = model.decoder.state_dict()
 
@@ -89,7 +89,7 @@ class CNNAEU(nn.Module, HSUModel):
         B (int): the number of spectral bands
         c (int): the number of endmembers
     """
-    def __init__(self, B, c, scale=3.0, E_init=None):
+    def __init__(self, B, c, scale=3.5, E_init=None):
         super().__init__()
         self.B = B
         self.c = c

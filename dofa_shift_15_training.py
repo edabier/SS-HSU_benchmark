@@ -80,7 +80,7 @@ def run_one_xp(i_dataset, i_xp, n_train, mse_tensor, sad_tensor, Y_init_fm, A_in
 
         model = unmx.UnmixingFromUpFeat(D=D, H=new_H, B=B, c=c)
         model.apply(model.weights_init)
-        model = models.init_decoder_weights(model, Y_init_fm/Y_init_fm.max(), c, is_unmixer=True, normalize=False)
+        model = models.init_decoder_weights(model, Y_init_fm/Y_init_fm.max(), c, is_unmixer=True, normalise=False)
         model = model.to(dev)
         optimizer = build_optim_wrapper(model, optim_wrapper)
 
@@ -110,7 +110,7 @@ def run_one_xp(i_dataset, i_xp, n_train, mse_tensor, sad_tensor, Y_init_fm, A_in
             
     E_hat_m = torch.mean(E_hats, dim=0)
     A_hat_m = torch.mean(A_hats, dim=0)
-    sad, _, mse = plots.compute_metrics_and_plot(E_hat_m, A_hat_m, A_init_fm, E_init, normalize_E=True, normalize_A=True, return_results=True, plot_E=False, plot_A=False)
+    sad, _, mse = plots.compute_metrics_and_plot(E_hat_m, A_hat_m, A_init_fm, E_init, normalise_E=True, normalise_A=True, return_results=True, plot_E=False, plot_A=False)
 
     mse_tensor[i_dataset, i_xp] = mse
     sad_tensor[i_dataset, i_xp] = sad

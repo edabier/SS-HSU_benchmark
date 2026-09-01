@@ -63,7 +63,7 @@ def main(dev):
             
         model = unmx.UnmixingFromUpFeat(D=D, alpha=alpha, H=new_H, B=B, c=c, n_features=1)
         model.apply(model.weights_init)
-        model = models.init_decoder_weights(model, Y_224/Y_224.max(), c, is_unmixer=True, normalize=False)
+        model = models.init_decoder_weights(model, Y_224/Y_224.max(), c, is_unmixer=True, normalise=False)
         model = model.to(dev)
         optimizer = build_optim_wrapper(model, optim_wrapper)
 
@@ -109,7 +109,7 @@ def main(dev):
             E_hat, A_hat, _ = utils.order_endmembers(E_init, E_hat, A_hat)
             A_hat = A_hat.unsqueeze(0)
 
-        sad, _, mse = plots.compute_metrics_and_plot(E_hat, A_hat, A_224, E_init, normalize_E=True, normalize_A=True, return_results=True, save_mat=f"/home/ids/edabier/HSU/SS-HSU_benchmark/DOFA_results/{dataset}")
+        sad, _, mse = plots.compute_metrics_and_plot(E_hat, A_hat, A_224, E_init, normalise_E=True, normalise_A=True, return_results=True, save_mat=f"/home/ids/edabier/HSU/SS-HSU_benchmark/DOFA_results/{dataset}")
         wandb.log({f"{dataset}_DOFA_mse": mse})
         wandb.log({f"{dataset}_DOFA_sad": sad})
         

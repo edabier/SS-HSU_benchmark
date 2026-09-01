@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import numpy as np
 import matplotlib.pyplot as plt
 import os
 from sklearn.decomposition import PCA
@@ -32,7 +33,42 @@ def plot_losses(total_loss, loss_sad, loss_ab, loss_tv, loss_mse):
     plt.tight_layout()
     plt.show()
 
-def compute_metrics_and_plot(E_hat=None, A_hat=None, A_gt=None, E_gt=None, model_name=None, normalize_E=True, normalize_A=True, return_results=False, plot_A=True, plot_E=True, hypersigma=False, cmap='viridis', save_mat=None):
+def sad(est, gt):
+    cos_angle = np.dot(gt, est) / (np.linalg.norm(gt) * np.linalg.norm(est))
+    cos_angle = np.clip(cos_angle, -1, 1)
+    return np.arccos(cos_angle)
+
+def compute_sad(E_hat, E_gt):
+    # shapes: (B, c)
+
+    c = E_gt.shape[-1]
+
+    sad_values = []
+    for i in range(c):
+        gt = E_gt[:, i]
+        est = E_hat[:, i]
+        sad_values.append(sad(est, gt))
+
+    avg_sad = np.mean(sad_values)
+
+    return avg_sad, sad_values
+
+def compute_rmse(A_hat, A_gt):
+    # shapes: (c, H, W)
+    c = A_gt.shape[0]
+    mse = nn.MSELoss()
+
+    rmse_values = []
+    for i in range(c):
+        gt = A_gt[i, :, :]
+        est = A_hat[i, :, :]
+        rmse_values.append(torch.sqrt(mse(gt,est)))
+
+    avg_rmse = np.mean(rmse_values)
+
+    return avg_rmse, rmse_values
+
+def compute_metrics_and_plot(E_hat=None, A_hat=None, A_gt=None, E_gt=None, model_name=None, normalise_E=True, normalise_A=True, return_results=False, plot_A=True, plot_E=True, hypersigma=False, cmap='viridis', save_mat=None):
     """
     Displays the predicted endmembers and abundances
     """
@@ -66,11 +102,12 @@ def compute_metrics_and_plot(E_hat=None, A_hat=None, A_gt=None, E_gt=None, model
             
         if E_gt != None:
             
-            if normalize_E:
-                E_hat = utils.normalize(E_hat, is_endmember=True)
-                E_gt = utils.normalize(E_gt, is_endmember=True)
+            if normalise_E:
+                E_hat = utils.normalise(E_hat, is_endmember=True)
+                E_gt = utils.normalise(E_gt, is_endmember=True)
 
             total_sad = sad(E_gt, E_hat)
+            # total_sad, sad_values = compute_sad(E_hat, E_gt)
 
             if plot_E:
                 fig, axes = plt.subplots(2, n_graph, figsize=(7,5))
@@ -79,6 +116,7 @@ def compute_metrics_and_plot(E_hat=None, A_hat=None, A_gt=None, E_gt=None, model
                     ax = axes[i]
 
                     sad_val = sad(E_gt[:, i], E_hat[:, i])
+                    # sad_val = sad_values[i]
 
                     ax.plot(E_gt[:, i], 'r', linewidth=1.0, label='GT')
                     ax.plot(E_hat[:, i], 'k-', linewidth=1.0, label='predict')
@@ -135,14 +173,15 @@ def compute_metrics_and_plot(E_hat=None, A_hat=None, A_gt=None, E_gt=None, model
         
         total_sad_a = sad(A_gt.flatten(1).T, A_hat.flatten(1).T)
 
-        if normalize_A:
-            A_hat = utils.normalize(A_hat)
-            A_gt = utils.normalize(A_gt)
+        if normalise_A:
+            A_hat = utils.normalise(A_hat)
+            A_gt = utils.normalise(A_gt)
         
         if hypersigma:
             total_mse = losses.hypersigma_mse(A_gt, A_hat)
 
         else:
+            # total_mse, mse_values = compute_rmse(A_hat, A_gt)
             total_mse = mse(A_gt, A_hat)/(torch.norm(A_gt)**2)
 
         if plot_A:
@@ -154,6 +193,7 @@ def compute_metrics_and_plot(E_hat=None, A_hat=None, A_gt=None, E_gt=None, model
                     mse_val = losses.hypersigma_mse(A_gt[i].unsqueeze(0), A_hat[i].unsqueeze(0))
                 
                 else:
+                    # mse_val = mse_values[i]
                     mse_val = mse(A_gt[i], A_hat[i])/(torch.norm(A_gt[i])**2)
 
                 axes[0, i].set_title(f"NMSE = {format(mse_val, '.2f')}", fontsize=10, pad=10, backgroundcolor=bg_colors[indices[i].item()], color=colors[indices[i].item()])
@@ -223,9 +263,9 @@ def plot_pca_features(features, title=None):
     X_pca = pca.fit_transform(X.detach().cpu().numpy())
 
     X_pca_reshaped = X_pca.reshape(alpha, alpha, 3).transpose(2, 0, 1)
-    X_normalized = (X_pca_reshaped - X_pca_reshaped.min()) / (X_pca_reshaped.max() - X_pca_reshaped.min())
+    X_normalised = (X_pca_reshaped - X_pca_reshaped.min()) / (X_pca_reshaped.max() - X_pca_reshaped.min())
 
-    im = plt.imshow(X_normalized.transpose(1, 2, 0))
+    im = plt.imshow(X_normalised.transpose(1, 2, 0))
     plt.axis('off')
     
     if title != None:

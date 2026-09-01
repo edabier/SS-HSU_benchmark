@@ -3,7 +3,6 @@ import torch.nn as nn
 from torch.optim.lr_scheduler import _LRScheduler
 from torch.utils.data import Dataset, DataLoader, random_split
 import torch.nn.functional as F
-# from torchvision.transforms.functional import normalize
 from scipy.optimize import linear_sum_assignment
 import numpy as np
 import matplotlib.pyplot as plt
@@ -11,7 +10,6 @@ import matplotlib.patches as patches
 import math
 import scipy.io as io
 import os
-import wandb
 from io import BytesIO
 from PIL import Image
 from code_christophe.munkres import Munkres
@@ -48,11 +46,11 @@ def order_endmembers(tensor_gt, tensor_hat, tensor2_hat=None):
             tensor2_hat = tensor2_hat.unsqueeze(0)
 
         tensor2_hat_ordered = torch.zeros_like(tensor2_hat)
-
+    
     for b in range(tensor_hat.size()[0]):
 
-        # Normalize the tensors
-        tensor_gt_norm = F.normalize(tensor_gt[b], p=2.0, dim=1)  # Normalize along reordered axis
+        # Normalise the tensors
+        tensor_gt_norm = F.normalize(tensor_gt[b], p=2.0, dim=1)  # Normalise along reordered axis
         tensor_hat_norm = F.normalize(tensor_hat[b], p=2.0, dim=1)
 
         # Compute cost matrix (cosine distance)
@@ -205,7 +203,7 @@ def oneD_to_2d(Y, H=None, W=None):
 
 def sum_to_one(Y, is_endmember=False):
     """
-    Normalizes a tensor of type Y, A, or E (batched or not) so that:
+    Normalises a tensor of type Y, A, or E (batched or not) so that:
     - For Y or A: each pixel (i,j) sums to 1 across the channel dimension.
     - For E: each tensor[:, i] sums to 1 across the last dimension.
     """
@@ -237,9 +235,9 @@ def sum_to_one(Y, is_endmember=False):
 
     return Yn
 
-def normalize(X, is_endmember=False, abundance_per_channel=False):
+def normalise(X, is_endmember=False, abundance_per_channel=False):
     """
-    Normalizes batched tensors
+    Normalises batched tensors
 
     If is_endmember -> set max to 1 for every endmember
     If is Y or A (must be of shape (batch, B/c, H, W)) -> divides by frobenius norm
@@ -284,6 +282,7 @@ class HSI_dataset(Dataset):
             self.col = data["Y"].shape[1]
         
         self.Y = torch.tensor(data['Y'], dtype=dtype)
+        # self.Y = self.Y + (self.Y.max())*torch.rand_like(self.Y)
         self.A = torch.tensor(data['A'], dtype=dtype)
         self.E = torch.tensor(data['M'], dtype=dtype) if deeptrans else torch.tensor(data['E'], dtype=dtype)
         

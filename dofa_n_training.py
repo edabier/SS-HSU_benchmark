@@ -93,7 +93,7 @@ def run_one_xp(i_dataset, i_train, n_train, i_xp, dataset, mse_tensor, sad_tenso
 
     assert not E_hat_m.isnan().any(), "E_hat_m has nan values"
 
-    sad, _, mse = plots.compute_metrics_and_plot(E_hat_m, A_hat_m, A_init_fm, E_init, normalize_E=True, normalize_A=True, return_results=True, plot_E=False, plot_A=False)
+    sad, _, mse = plots.compute_metrics_and_plot(E_hat_m, A_hat_m, A_init_fm, E_init, normalise_E=True, normalise_A=True, return_results=True, plot_E=False, plot_A=False)
     print(f"Average SAD = {format(sad, '.3f')}, MSE = {format(mse, '.3f')}")
 
     mse_tensor[i_dataset, i_train, i_xp] = mse

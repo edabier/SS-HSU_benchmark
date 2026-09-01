@@ -9,43 +9,50 @@ import sys
 import os
 from timm.models.vision_transformer import Block
 from safetensors.torch import load_file
+from collections import OrderedDict
 
 import matplotlib.pyplot as plt 
 
 from src.utils import utils, losses
+from src.models import unmixers as unmx
 
 global_path = "/home/ids/edabier/HSU"
 # global_path = "/Users/edabier/Documents/Thèse/Thèse_Télécom"
 # global_path = "/home/edabier/Documents/Thèse/benchmark"
 sys.path.append(global_path)
 
-# sys.path.append(f"{global_path}/SpecAware")
+# DOFA
+from DOFA.wave_dynamic_layer import Dynamic_MLP_OFA
+
+# SpecAware
 from SpecAware.example import models_SpecAware_encoder
 
-# sys.path.append(f"{global_path}/spectral_earth")
+# SpectralEarth
 from spectral_earth.src.backbones import spec_vit
 from spectral_earth.src.backbones import spec_resnet
 from spectral_earth.src.backbones import spectral_adapter
 
-# sys.path.append(f"{global_path}/NAF")
-from NAF.src.model import naf
+# NAF
+# from NAF.src.model import naf
 
-# sys.path.append(f"{global_path}/IEEE_TPAMI_SpectralGPT")
-import IEEE_TPAMI_SpectralGPT.models_mae_spectral
+# SpectralGPT
+# import IEEE_TPAMI_SpectralGPT.models_mae_spectral
 
+# Panopticon
 from panopticon.dinov2.models import vision_transformer as panopticon_vits
 
+# UniverSat
 import UniverSat.hubconf as buildUniverSat
 
-# sys.path.append(f"{global_path}/HyperFree")
-import HyperFree.HyperFree.build_HyperFree as hf
-from HyperFree.HyperFree.modeling import image_encoder
+# # HyperFree
+# import HyperFree.HyperFree.build_HyperFree as hf
+# from HyperFree.HyperFree.modeling import image_encoder
 
-# sys.path.append(f"{global_path}/DOFA")
-from DOFA.wave_dynamic_layer import Dynamic_MLP_OFA
+# HyperSL
+from HyperSL.engine.model import SpectralSharedEncoder
 
-sys.path.append(f"{global_path}/HyperSIGMA/HyperspectralUnmixing")
-from HyperSIGMA.HyperspectralUnmixing.models.model import SpatViT, SpecViT
+# # HyperSIGMA
+# from HyperSIGMA.HyperspectralUnmixing.models.model import SpatViT, SpecViT
 
 class HyperSIGMA_Unmix(torch.nn.Module):
     def __init__(self, patch_size, channels, seg_patches, NUM_TOKENS, embed_dim, num_em, scale):
@@ -166,8 +173,8 @@ class HyperSIGMA_Unmix(torch.nn.Module):
             nn.Dropout(0.2),
         )
 
-        self.sumtoone = Sum_to_one(scale)
-        self.decoder = Decoder(c=num_em, B=channels)
+        self.sumtoone = unmx.Sum_to_one(scale)
+        self.decoder = unmx.Decoder(c=num_em, B=channels)
 
     def _upsample_add(self, x, y):
         '''Upsample and add two feature maps.
@@ -444,8 +451,9 @@ def create_fm(fm_name, Y, c=None, n_features=1, size="base", version="v2", use_c
         fm = models_SpecAware_encoder.MaskedHSIAutoencoderViT(embed_dim=768, patch_size=8,
                                     depth=12, num_heads=12, mlp_ratio=4, out_indices=out_indices,
                                     norm_layer=partial(nn.LayerNorm, eps=1e-6))
-        checkpoint = torch.load(f"{path}/pretrained_models/SpecAware/SpecAware_Base_model.pth")
+        checkpoint = torch.load(f"{path}/pretrained_models/SpecAware/SpecAware_Base_model.pth", map_location=device)
         fm.load_state_dict(checkpoint)
+        fm = fm.to(device)
 
     elif fm_name == "HyperSIGMA":
         new_H = H
@@ -552,6 +560,27 @@ def create_fm(fm_name, Y, c=None, n_features=1, size="base", version="v2", use_c
         fm = panopticon_vits.__dict__["vit_base"](**vit_kwargs)
         fm.load_state_dict(checkpoint, strict=True)
 
+    elif fm_name == "HyperSL":
+        if H > 128:
+            new_H = 128
+        else:
+            new_H = H
+        Y = Y[:,:,:new_H, :new_H]
+
+        checkpoint = torch.load(f'{global_path}/pretrained_models/HyperSL/10_base_mask95_checkpoint.pt', map_location=device)
+        weights = OrderedDict()
+        for k, v in checkpoint['model'].items():
+            name = k[7:]
+            weights[name] = v
+        
+        fm = SpectralSharedEncoder(
+                embedding_dim = 256,
+                encoder_depth=8,
+                decoder_depth=4,
+                num_heads=8,
+            )
+        fm.load_state_dict(weights)
+
     elif fm_name == "UniverSat":
         if H < 224:
             Y = F.interpolate(Y, size=(224,224))
@@ -561,11 +590,12 @@ def create_fm(fm_name, Y, c=None, n_features=1, size="base", version="v2", use_c
         Y = Y[:,:,:new_H, :new_H]
 
         modalities_dict = {
+            "earthview":  ["neon"],
             "hyperglobal": ["EO1"],
             "spectralearth": ["enmap"],
         }
 
-        checkpoint = load_file(f"{path}/pretrained_models/UniverSat/model.safetensors")
+        checkpoint = load_file(f"{path}/pretrained_models/UniverSat/model.safetensors")#, map_location=device)
         checkpoint = {
                 key.replace("model.", ""): value
                 for key, value in checkpoint.items()
@@ -592,7 +622,7 @@ def create_naf(model_name="DOFA", dev="cpu", path="/home/ids/edabier/HSU"):
     adapter.load_state_dict(spectral_adapter_state_dict, strict=False)
     naf_upsampler = naf.NAF(in_channels=128, kernel_size=7)
 
-    state_dict = torch.load(f"{path}/pretrained_models/NAF/trained_naf_{model_name}.pt")
+    state_dict = torch.load(f"{path}/pretrained_models/NAF/trained_naf_{model_name}.pt", map_location=dev)
     naf_upsampler.load_state_dict(state_dict, strict=False)
 
     return adapter, naf_upsampler
@@ -656,6 +686,25 @@ def reshape_Y(fm_name, Y, new_H=None, A=None):
                 A = F.interpolate(A, size=(new_H,new_H))
             A = A[:,:,:new_H, :new_H]
     
+    elif fm_name == "UniverSat":
+        new_H = 224
+
+        if Y.shape[-1] < new_H:
+            Y = F.interpolate(Y, size=(new_H,new_H))
+        Y = Y[:,:,:new_H, :new_H]
+        
+        if A != None:
+            if A.shape[-1] < new_H:
+                A = F.interpolate(A, size=(new_H,new_H))
+            A = A[:,:,:new_H, :new_H]
+
+    elif fm_name == "HyperSL" or fm_name == "SpectralSharedEncoder":
+        new_H = 128
+        Y = Y[:,:,:new_H, :new_H]
+        
+        if A != None:
+            A = A[:,:,:new_H, :new_H]
+
     else:
         if A != None:
             return Y, A
@@ -667,42 +716,86 @@ def reshape_Y(fm_name, Y, new_H=None, A=None):
     else:
         return Y
 
-def extract_f(fm, Y, new_H, wavelengths, A=None, use_cls=False):
+def extract_f(fm, Y, new_H, wavelengths, A=None, use_cls=False, patch_size=None):
     fm_name = fm.__class__.__name__
+    device = Y.device
     
     if A != None:
-        Y, A = reshape_Y(fm_name, Y, new_H, A)
+        Y, A = reshape_Y(fm_name, utils.standardise(Y), new_H, A)
     else:
-        Y = reshape_Y(fm_name, Y, new_H)
+        Y = reshape_Y(fm_name, utils.standardise(Y), new_H)
 
     if fm_name == "OFAViT": # DOFA
-        features = get_dofa_features(fm, utils.standardise(Y), wavelengths)
+        features = get_dofa_features(fm, Y, wavelengths)
         noise = torch.rand_like(features)
 
     elif fm_name == "ImageEncoderViT": # HyperFree
-        features = get_hyperfree_features(fm, utils.standardise(Y), wavelengths)
+        features = get_hyperfree_features(fm, Y, wavelengths)
         noise = torch.rand_like(features)
 
     elif fm_name == "SpecViTBase" or fm_name == "SpecViT" or fm_name == "SpecViTSmall" or fm_name == "SpecViTLarge" or fm_name == "SpecViTHuge":
 
-        features = get_specvit_features(fm, utils.standardise(Y), use_cls)
+        features = get_specvit_features(fm, Y, use_cls)
         noise = torch.rand_like(features)
 
     elif fm_name == "MaskedHSIAutoencoderViT":# SpecAware
-        features, _ = fm.forward(utils.standardise(Y), wavelength=torch.tensor(wavelengths), fwhm=torch.tensor([1]))
+        features, _ = fm.forward(Y, wavelength=torch.tensor(wavelengths).to(device), fwhm=torch.tensor([1]).to(device))
     
     elif fm_name == "HyperSIGMA_Unmix":
-        features = fm.forward_features(utils.standardise(Y))
+        features = fm.forward_features(Y)
 
-    elif fm_name == "DinoVisionTransformer":
+    elif fm_name == "DinoVisionTransformer": # Panopticon
         x_dict = dict(
-            imgs = utils.standardise(Y),
+            imgs = Y,
             chn_ids = torch.tensor(wavelengths).repeat(1,1)
         )
         features = fm.get_intermediate_layers(x_dict, n=[11], return_class_token=False)[0][0].T
     
     elif fm_name == "UniverSat":
-        features = fm(x={"hsi":Y}, wavelengths={"hsi":wavelengths}, input_res={"hsi":30}, scale=100, latent_grid=16, output_grid=new_H**2, subpatches={"hsi":1})[0][0].T
+        if patch_size is None:
+            patch_size = new_H
+
+        unfold = nn.Unfold(kernel_size=patch_size, stride=patch_size)
+        Y_init_patch = unfold(Y).permute(0,2,1)
+        Y_init_patch = utils.oneD_to_2d(Y_init_patch.reshape(Y_init_patch.shape[1], Y.shape[1], -1))
+        features = torch.zeros(fm.embed_dim, new_H, new_H)
+        n = int(new_H/patch_size)
+
+        with torch.amp.autocast("cuda"):
+            with torch.no_grad():
+                for i, patch in enumerate(Y_init_patch):
+                    f, _ = fm.encode({"hsi":patch.unsqueeze(0)}, wavelengths={"hsi":wavelengths}, latent_grid=patch_size**2, input_res={"hsi":30}, subpatches={"hsi":1})
+                    f = utils.oneD_to_2d(f[0].T)
+                    features[:, patch_size*(i//n):patch_size*(i//n)+patch_size, patch_size*(i%n):patch_size*(i%n)+patch_size] = f
+
+                    del f
+                    torch.cuda.empty_cache()    
+
+        # with torch.cuda.amp.autocast():
+        #     with torch.no_grad():
+        #         features, _ = fm.encode({"hsi":utils.standardise(Y)}, wavelengths={"hsi":wavelengths}, latent_grid=(patch_size//2)**2, input_res={"hsi":30}, subpatches={"hsi":1})
+        # features, _ = fm.encode({"hsi":utils.standardise(Y)}, wavelengths={"hsi":wavelengths}, latent_grid=patch_size**2, input_res={"hsi":30}, subpatches={"hsi":1})
+        # features = fm(x={"hsi":Y}, wavelengths={"hsi":wavelengths}, input_res={"hsi":30}, scale=100, latent_grid=16, output_grid=new_H, subpatches={"hsi":1})[0][0].T
+
+    elif fm_name == "SpectralSharedEncoder": # HyperSL
+        if patch_size is None:
+            patch_size = new_H
+
+        unfold = nn.Unfold(kernel_size=patch_size, stride=patch_size)
+        Y_init_patch = unfold(Y).permute(0,2,1)
+        Y_init_patch = utils.oneD_to_2d(Y_init_patch.reshape(Y_init_patch.shape[1], Y.shape[1], -1))
+        features = torch.zeros(fm.embedding_dim, new_H, new_H)
+        n = int(new_H/patch_size)
+
+        with torch.amp.autocast("cuda"):
+            with torch.no_grad():
+                for i, patch in enumerate(Y_init_patch):
+                    patch = patch.permute(1,2,0).unsqueeze(0)
+                    f, _, _, _, _, _ = fm.encoder_forward(patch, torch.tensor(wavelengths), 0.)
+                    f = utils.oneD_to_2d(f.permute(1,2,0))
+                    features[:, patch_size*(i//n):patch_size*(i//n)+patch_size, patch_size*(i%n):patch_size*(i%n)+patch_size] = f
+                    del f
+                    torch.cuda.empty_cache()
 
     else:
         raise("Fm is not known, use DOFA, HyperFree, HyperSIGMA, SpecViT, SpecRnDino, SpecRnMoco, Panopticon or UniverSat")

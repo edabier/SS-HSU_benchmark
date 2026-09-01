@@ -2,7 +2,7 @@
 #SBATCH --job-name=hypersigma
 #SBATCH --output=%x_%j.out      # %x for job name, %j for job ID
 #SBATCH --error=%x_%j.err
-#SBATCH -p V100
+#SBATCH -p L40S
 #SBATCH --nodes=1
 #SBATCH --mem=30G
 #SBATCH --exclude=node42,node43
@@ -18,7 +18,7 @@ echo "Job started at: $(date)"
 
 # Activate the environment
 eval "$(conda shell.bash hook)"
-conda activate hsu
+conda activate hsu-latest
 
 # Execute the Python script with specific arguments
 # srun python /home/ids/edabier/HSU/my_HyperSIGMA/HyperspectralUnmixing/trainval.py

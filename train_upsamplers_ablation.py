@@ -205,7 +205,7 @@ def run_one_xp(i_dataset, upsampler, model, i_xp, dataset, mse_tensor, sad_tenso
             E_hat, A_hat, _ = model(Y_fm)
 
             if not E_hat.isnan().any().item() and not A_hat.isnan().any().item():
-                sad, _, mse = plots.compute_metrics_and_plot(E_hat, A_hat, A_init_fm, E_init, normalize_E=True, normalize_A=True, return_results=True, plot_E=False, plot_A=False)
+                sad, _, mse = plots.compute_metrics_and_plot(E_hat, A_hat, A_init_fm, E_init, normalise_E=True, normalise_A=True, return_results=True, plot_E=False, plot_A=False)
                 print(f"Current SAD = {format(sad, '.3f')}, NMSE = {format(mse, '.3f')}")
             else:
                 print(E_hat.isnan().any(), A_hat.isnan().any())
@@ -226,7 +226,7 @@ def run_one_xp(i_dataset, upsampler, model, i_xp, dataset, mse_tensor, sad_tenso
         A_hat_m = torch.mean(valid_A_hats, dim=0)
     if valid_E_hats.shape[0] > 0:
         E_hat_m = torch.mean(valid_E_hats, dim=0)
-        sad, _, mse = plots.compute_metrics_and_plot(E_hat_m, A_hat_m, A_init_fm, E_init, normalize_E=True, normalize_A=True, return_results=True, plot_E=False, plot_A=False)
+        sad, _, mse = plots.compute_metrics_and_plot(E_hat_m, A_hat_m, A_init_fm, E_init, normalise_E=True, normalise_A=True, return_results=True, plot_E=False, plot_A=False)
         print(f"Average SAD = {format(sad, '.3f')}, MSE = {format(mse, '.3f')}")
     else:
         sad, mse = 0, 0

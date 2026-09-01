@@ -100,7 +100,7 @@ def objective(trial):
                 _, A_init, features = rsfm.extract_f(fm, Y_init, new_H, wavelengths, A, False)
                 E_hat1, A_hat1, _ = model(features)
 
-            sad, _, mse = plots.compute_metrics_and_plot(E_hat1, A_hat1, A_init, E, normalize_E=True, normalize_A=True, return_results=True, plot_A=False, plot_E=False)
+            sad, _, mse = plots.compute_metrics_and_plot(E_hat1, A_hat1, A_init, E, normalise_E=True, normalise_A=True, return_results=True, plot_A=False, plot_E=False)
             sads.append(sad.detach().cpu())
             mses.append(mse.detach().cpu())
 

@@ -32,7 +32,7 @@ def train_model(Y, fm, B, c, D, alpha, new_H, wavelengths, dev):
     model = unmx.UnmixingFromFeatures(D=D, alpha=alpha, H=new_H, B=B, c=c)
     compiled_model = torch.compile(model)
     compiled_model.apply(model.weights_init)
-    compiled_model = models.init_decoder_weights(compiled_model, Y/Y.max(), c, is_unmixer=True, normalize=False)
+    compiled_model = models.init_decoder_weights(compiled_model, Y/Y.max(), c, is_unmixer=True, normalise=False)
 
     compiled_model = compiled_model.to(dev)
     optimizer = build_optim_wrapper(compiled_model, optim_wrapper)
@@ -88,7 +88,7 @@ def run_one_xp(i_dataset, i_pad, pad, i_xp, mse_tensor, sad_tensor, Y_init, A_in
     A_hat_padded /= weights
     E_hat_m = torch.mean(E_hats, dim=0)
 
-    sad_pad, _, mse_pad = plots.compute_metrics_and_plot(E_hat_m, A_hat_padded[:,:,pad*2:-1-2*pad, pad*2:-1-2*pad], A_init[:,pad:-1-pad, pad:-1-pad], E_init, normalize_E=True, normalize_A=True, return_results=True, plot_A=False, plot_E=False)
+    sad_pad, _, mse_pad = plots.compute_metrics_and_plot(E_hat_m, A_hat_padded[:,:,pad*2:-1-2*pad, pad*2:-1-2*pad], A_init[:,pad:-1-pad, pad:-1-pad], E_init, normalise_E=True, normalise_A=True, return_results=True, plot_A=False, plot_E=False)
     mse_tensor[i_dataset, i_pad, i_xp] = mse_pad
     sad_tensor[i_dataset, i_pad, i_xp] = sad_pad
 

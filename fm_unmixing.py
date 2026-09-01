@@ -146,7 +146,7 @@ def run_one_xp(n, dataset, mses, sads, mses_cnn, sads_cnn, Y_init, wavelengths, 
         _, A, features = rsfm.extract_f(model_name, fm, Y_init, new_H, wavelengths, A)
         E_hat1, A_hat1, Y_hat1 = model(features)
 
-        sad, mse = utils.plot_results(E_hat1, A_hat1, A, E, normalize_E=True, normalize_A=True, return_results=True)
+        sad, mse = utils.plot_results(E_hat1, A_hat1, A, E, normalise_E=True, normalise_A=True, return_results=True)
         mses[i_model, n] = float(mse)
         sads[i_model, n] = float(sad)
 

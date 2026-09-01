@@ -57,7 +57,7 @@ def instantiate_models(pad, shift, Y_init, D, alpha, new_H, B, c, dev):
         y_i = (i%n_rows)*shift
         Y = Y_init[:, :, x_i:x_i+new_H, y_i:y_i+new_H]
 
-        model = models.init_decoder_weights(model, Y/Y.max(), c, is_unmixer=True, normalize=False)
+        model = models.init_decoder_weights(model, Y/Y.max(), c, is_unmixer=True, normalise=False)
         model = model.to(dev)
         optimizer = build_optim_wrapper(model, optim_wrapper)
 

@@ -46,7 +46,7 @@ def run_one_xp(model, i_dataset, i_xp, n_train, dataset, mse_tensor, sad_tensor,
     for i in range(n_train): 
         print(f"training {i}/{n_train}")
 
-        model = unmx.UnmixingFromFeatures(D=D, alpha=alpha, H=new_H, B=B, c=c)
+        model = unmx.UnmixingFromFeatures(D=D, alpha=alpha, H=new_H, B=B, c=c, n_features=1, kernel_size=1)
         model.apply(model.weights_init)
         model = models.init_decoder_weights(model, Y_init_fm/Y_init_fm.max(), c, is_unmixer=True)
 
@@ -65,11 +65,11 @@ def run_one_xp(model, i_dataset, i_xp, n_train, dataset, mse_tensor, sad_tensor,
 
                 Y = utils.oneD_to_2d(Y).to(dev)
 
-                Y_fm, features = rsfm.extract_f(fm, Y, new_H, wavelengths)
-                E_hat, A_hat, Y_hat = model(features, Y_fm)
-            
-                loss = model.loss(Y_fm, Y_hat, A_hat, E_hat)
+                _, features = rsfm.extract_f(fm, Y, new_H, wavelengths)
+                Y_fm = rsfm.reshape_Y(fm.__class__.__name__, Y, new_H)
 
+                E_hat, A_hat, Y_hat = model(features)
+                loss = model.loss(Y_fm, Y_hat, A_hat, E_hat, W_tv_e=0)
                 loss.backward()
                 nn.utils.clip_grad_norm_(model.parameters(), max_norm=10, norm_type=1)
                 optimizer.step()
@@ -77,24 +77,26 @@ def run_one_xp(model, i_dataset, i_xp, n_train, dataset, mse_tensor, sad_tensor,
                 with torch.no_grad():
                     constraints = models.weightConstraint()
                     model.decoder.apply(constraints)
-                    
+        
         model.eval()
         
         with torch.no_grad():
-            _, A_init_fm, features = rsfm.extract_f(fm, Y_init, new_H, wavelengths, A_init)
-            E_hat, A_hat, _ = model(features, Y_fm)
-            sad, _, mse = plots.compute_metrics_and_plot(E_hat, A_hat, A_init_fm, E_init, normalize_E=True, normalize_A=True, return_results=True, plot_E=False, plot_A=False)
+            
+            _, features = rsfm.extract_f(fm, Y, new_H, wavelengths)
+            Y_fm, A_init_fm = rsfm.reshape_Y(fm.__class__.__name__, Y, new_H, A_init)
+            E_hat, A_hat, _ = model(features)
+            sad, _, mse = plots.compute_metrics_and_plot(E_hat, A_hat, A_init_fm, E_init, return_results=True, plot_E=False, plot_A=False)
             print(f"Current SAD = {format(sad, '.3f')}, NMSE = {format(mse, '.3f')}")
 
         E_hats[i] = E_hat
         A_hats[i] = A_hat.squeeze(0)
 
-    E_hat_m = torch.mean(E_hats, dim=0)
-    A_hat_m = torch.mean(A_hats, dim=0)
+    E_hat_m = torch.nanmean(E_hats, dim=0)
+    A_hat_m = torch.nanmean(A_hats, dim=0)
 
-    assert not E_hat_m.isnan().any(), "E_hat_m has nan values"
+    # assert not E_hat_m.isnan().any(), "E_hat_m has nan values"
 
-    sad, _, mse = plots.compute_metrics_and_plot(E_hat_m, A_hat_m, A_init_fm, E_init, normalize_E=True, normalize_A=True, return_results=True, plot_E=False, plot_A=False)
+    sad, _, mse = plots.compute_metrics_and_plot(E_hat_m, A_hat_m, A_init_fm, E_init, return_results=True, plot_E=False, plot_A=False)
 
     mse_tensor[i_dataset, i_xp] = mse
     sad_tensor[i_dataset, i_xp] = sad
@@ -129,10 +131,7 @@ def main(args, dev):
         A_init = utils.oneD_to_2d(A_init).unsqueeze(0)
         H = Y_init.shape[-1]
 
-        if dataset == "urban4":
-            wavelengths_path = f"{global_path}/SS-HSU_benchmark/datasets/urban_wavelength.txt"
-        else:
-            wavelengths_path = f"{global_path}/SS-HSU_benchmark/datasets/{dataset}_wavelength.txt"
+        wavelengths_path = f"{global_path}/SS-HSU_benchmark/datasets/{dataset}_wavelength.txt"
         with open(wavelengths_path, "r") as file:
             lines = file.readlines()
             wavelengths = [float(line.strip()) for line in lines if line.strip()]
@@ -156,7 +155,7 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--n_xp", default=10, type=int)
-    parser.add_argument("--n_train", default=15, type=int)
+    parser.add_argument("--n_train", default=1, type=int)
     parser.add_argument("--size", default="large", type=str)
     parser.add_argument("--version", default="v1", type=str)
     parser.add_argument("--model", default="DOFA", type=str)

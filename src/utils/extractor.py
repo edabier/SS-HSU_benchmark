@@ -8,12 +8,12 @@ import time
 
 import src.utils.utils as utils
 
-def normalize_endmembers(e):
+def normalise_endmembers(e):
     """
-    Normalizes the values of the endmembers' spectra to lie in [0,1]
+    Normalises the values of the endmembers' spectra to lie in [0,1]
     
     Args:
-        e: the endmember matrix to normalize
+        e: the endmember matrix to normalise
     """
     batched = e.dim() == 3
     
@@ -98,7 +98,7 @@ class SiVM():
         E = x[:, index]
         return E
 
-def SiVM(Y, c, E_gt=None): 
+def SiVM(Y, c, E_gt=None, seed=None): 
     """ 
     SiVM endmember extractor based on UnDIP's repository 
 
@@ -108,6 +108,9 @@ def SiVM(Y, c, E_gt=None):
         E_gt (optional): if set, used to reorder the extracted endmembers to match E_gt 
     """ 
     dev = Y.device
+    if seed != None:
+        torch.manual_seed(0)
+        torch.cuda.manual_seed(0)
 
     if Y.dim()!= 2:
         if Y.dim() ==4:
